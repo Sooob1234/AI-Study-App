@@ -4,6 +4,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import delete, insert, select
 from sqlalchemy.orm import Session
 
+from app.api.deps import get_current_user, get_own_project, get_own_source
+from app.core.config import UPLOAD_ROOT
 from app.core.database import get_db
 from app.models.project import ProjectDB
 from app.models.source import (
@@ -12,6 +14,7 @@ from app.models.source import (
     SourceResponse,
     project_sources,
 )
+from app.models.user import UserDB
 
 router = APIRouter(
     tags=["Sources"]
@@ -23,20 +26,11 @@ router = APIRouter(
     response_model=SourceResponse
 )
 def create_source(
-    project_id: int,
     data: SourceCreate,
+    project: ProjectDB = Depends(get_own_project),
+    user: UserDB = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    project = db.query(ProjectDB).filter(
-        ProjectDB.id == project_id
-    ).first()
-
-    if project is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Project not found"
-        )
-
     if data.source_type.value == "PDF":
         raise HTTPException(
             status_code=400,
@@ -44,6 +38,7 @@ def create_source(
         )
 
     source = SourceDB(
+        user_id=user.id,
         title=data.title,
         source_type=data.source_type.value,
         url=data.url,
@@ -58,7 +53,7 @@ def create_source(
 
     db.execute(
         insert(project_sources).values(
-            project_id=project_id,
+            project_id=project.id,
             source_id=source.id
         )
     )
@@ -74,19 +69,9 @@ def create_source(
     response_model=list[SourceResponse]
 )
 def get_project_sources(
-    project_id: int,
+    project: ProjectDB = Depends(get_own_project),
     db: Session = Depends(get_db)
 ):
-    project = db.query(ProjectDB).filter(
-        ProjectDB.id == project_id
-    ).first()
-
-    if project is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Project not found"
-        )
-
     statement = (
         select(SourceDB)
         .join(
@@ -94,7 +79,7 @@ def get_project_sources(
             SourceDB.id == project_sources.c.source_id
         )
         .where(
-            project_sources.c.project_id == project_id
+            project_sources.c.project_id == project.id
         )
         .order_by(SourceDB.id.desc())
     )
@@ -102,10 +87,13 @@ def get_project_sources(
     return db.scalars(statement).all()
 
 
-# DELETE_SOURCE_V1
+@router.get("/sources/{source_id}", response_model=SourceResponse)
+def get_source(source: SourceDB = Depends(get_own_source)):
+    """One source: its type, size and processing status."""
+    return source
 
-# Only files inside this folder may be removed from disk.
-UPLOAD_ROOT = "uploads"
+
+# DELETE_SOURCE_V1
 
 
 def _remove_stored_file(file_path: str | None) -> bool:
@@ -129,20 +117,11 @@ def _remove_stored_file(file_path: str | None) -> bool:
 
 @router.delete("/sources/{source_id}")
 def delete_source(
-    source_id: int,
+    source: SourceDB = Depends(get_own_source),
     db: Session = Depends(get_db)
 ):
     """Delete a source completely: its pages, chunks, project links and file."""
-    source = db.query(SourceDB).filter(
-        SourceDB.id == source_id
-    ).first()
-
-    if source is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Source not found"
-        )
-
+    source_id = source.id
     title = source.title
     file_path = source.file_path
 

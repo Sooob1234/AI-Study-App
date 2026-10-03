@@ -6,9 +6,12 @@ from pypdf import PdfReader
 from sqlalchemy import insert
 from sqlalchemy.orm import Session
 
+from app.api.deps import get_current_user, get_own_project
 from app.api.source_chunks import save_chunks
+from app.core.config import UPLOAD_ROOT
 from app.core.database import get_db
 from app.models.project import ProjectDB
+from app.models.user import UserDB
 from app.models.source import SourceDB, SourceResponse, project_sources
 from app.models.source_page import SourcePageDB
 from app.services.quality_check import assess_extraction_quality
@@ -20,7 +23,7 @@ router = APIRouter(
 
 # UPLOAD_HARDENING_V1
 
-UPLOAD_DIR = "uploads/pdfs"
+UPLOAD_DIR = os.path.join(UPLOAD_ROOT, "pdfs")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # Largest PDF accepted, in megabytes.
@@ -63,20 +66,11 @@ def _store_upload(file: UploadFile, file_path: str) -> None:
     response_model=SourceResponse
 )
 def upload_pdf(
-    project_id: int,
     file: UploadFile = File(...),
+    project: ProjectDB = Depends(get_own_project),
+    user: UserDB = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    project = db.query(ProjectDB).filter(
-        ProjectDB.id == project_id
-    ).first()
-
-    if project is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Project not found"
-        )
-
     filename = (file.filename or "").strip()
 
     if not filename.lower().endswith(".pdf"):
@@ -111,6 +105,7 @@ def upload_pdf(
             )
 
         source = SourceDB(
+            user_id=user.id,
             title=filename[:MAX_TITLE_CHARS],
             source_type="PDF",
             file_path=file_path,
@@ -123,7 +118,7 @@ def upload_pdf(
 
         db.execute(
             insert(project_sources).values(
-                project_id=project_id,
+                project_id=project.id,
                 source_id=source.id
             )
         )

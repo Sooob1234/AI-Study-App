@@ -5,6 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Table, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.core.clock import utc_now
 from app.core.database import Base
 
 
@@ -45,6 +46,14 @@ class SourceDB(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
 
+    # The owner. Empty only for rows made before accounts existed.
+    user_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True
+    )
+
     title: Mapped[str] = mapped_column(String(255), nullable=False)
 
     source_type: Mapped[str] = mapped_column(
@@ -80,7 +89,7 @@ class SourceDB(Base):
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
-        default=datetime.utcnow
+        default=utc_now
     )
 
 
