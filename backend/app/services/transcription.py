@@ -58,6 +58,13 @@ def is_available() -> bool:
     return True
 
 
+def supported_languages() -> set[str]:
+    """The language codes the recogniser can be told to expect."""
+    from faster_whisper.tokenizer import _LANGUAGE_CODES
+
+    return set(_LANGUAGE_CODES)
+
+
 def probe_audio(path: str) -> float:
     """Return the length of an audio file in seconds.
 
@@ -103,8 +110,13 @@ def _get_model():
         return _model
 
 
-def transcribe(path: str) -> Transcript:
-    """Transcribe an audio file. Raises TranscriptionError when impossible."""
+def transcribe(path: str, language: str | None = None) -> Transcript:
+    """Transcribe an audio file. Raises TranscriptionError when impossible.
+
+    `language` is a code such as "fa". Without it the recogniser guesses the
+    language from the first seconds, which can go wrong; a wrong guess gives
+    a useless transcript, so the language should be passed when it is known.
+    """
     try:
         model = _get_model()
     except Exception:
@@ -114,7 +126,9 @@ def transcribe(path: str) -> Transcript:
     try:
         with _transcribe_lock:
             # vad_filter skips the silent parts of the recording.
-            pieces, info = model.transcribe(path, vad_filter=True)
+            pieces, info = model.transcribe(
+                path, language=language, vad_filter=True
+            )
             segments = [
                 (float(piece.start), float(piece.end), piece.text.strip())
                 for piece in pieces

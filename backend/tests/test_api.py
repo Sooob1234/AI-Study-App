@@ -417,8 +417,8 @@ def _fake_transcriber(monkeypatch, result):
 
     calls = []
 
-    def transcribe(path):
-        calls.append(path)
+    def transcribe(path, language=None):
+        calls.append((path, language))
         assert os.path.isfile(path)
         if isinstance(result, Exception):
             raise result
@@ -428,10 +428,11 @@ def _fake_transcriber(monkeypatch, result):
     return calls
 
 
-def _upload_audio(client, headers, project_id, data=None, name="lecture.wav"):
+def _upload_audio(client, headers, project_id, data=None, name="lecture.wav", language=None):
     return client.post(
         f"/projects/{project_id}/sources/audio",
         files={"file": (name, _wav() if data is None else data, "audio/wav")},
+        data={} if language is None else {"language": language},
         headers=headers,
     )
 
@@ -457,10 +458,13 @@ def test_audio_source_is_transcribed(client, new_user, monkeypatch):
     assert created["source_type"] == "AUDIO"
     assert created["duration"] == 2
     assert created["title"] == "lecture.wav"
-    assert len(calls) == 1
+    assert created["language"] is None
+    assert [language for _, language in calls] == [None]
 
     source = client.get(f"/sources/{created['id']}", headers=headers).json()
     assert (source["status"], source["status_detail"]) == ("READY", None)
+    # No language was given, so the one the recogniser detected is kept.
+    assert source["language"] == "en"
 
     stored = client.get(f"/sources/{created['id']}/segments/", headers=headers).json()
     assert len(stored) == 40
@@ -601,3 +605,27 @@ def test_the_recogniser_can_read_an_audio_file(tmp_path):
     # Two seconds at the recogniser's own rate of 16000 samples a second.
     assert abs(len(samples) - 32000) < 1600
     assert transcription.probe_audio(str(path)) == pytest.approx(2.0, abs=0.05)
+
+
+def test_audio_language_is_passed_to_the_recogniser_and_kept_for_retry(client, new_user, monkeypatch):
+    from app.services.transcription import Transcript, TranscriptionError
+
+    _audio_ready()
+    headers, _ = new_user()
+    project_id = _project(client, headers)
+
+    calls = _fake_transcriber(monkeypatch, TranscriptionError("TRANSCRIPTION_FAILED"))
+    created = _upload_audio(client, headers, project_id, language=" FA ").json()
+    assert created["language"] == "fa"
+
+    text = "درس امروز درباره تاریخ ایران است و برای همه مهم است " * 3
+    calls = _fake_transcriber(monkeypatch, Transcript("en", [(0.0, 2.0, text)]))
+    assert client.post(f"/sources/{created['id']}/retry", headers=headers).status_code == 200
+    assert [language for _, language in calls] == ["fa"]
+
+    source = client.get(f"/sources/{created['id']}", headers=headers).json()
+    # The chosen language is not replaced by what the recogniser reports.
+    assert (source["status"], source["language"]) == ("READY", "fa")
+
+    for bad in ("persian", "xx", "f a"):
+        assert _upload_audio(client, headers, project_id, language=bad).status_code == 400, bad

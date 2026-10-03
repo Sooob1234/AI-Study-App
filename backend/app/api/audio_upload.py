@@ -3,7 +3,15 @@ import math
 import os
 import uuid
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    UploadFile,
+)
 from sqlalchemy import delete, insert
 from sqlalchemy.orm import Session
 
@@ -81,7 +89,8 @@ def process_audio_source(source_id: int) -> None:
 
         try:
             transcript = transcription.transcribe(
-                to_disk_path(source.file_path)
+                to_disk_path(source.file_path),
+                language=source.language,
             )
 
             segments = []
@@ -110,6 +119,8 @@ def process_audio_source(source_id: int) -> None:
             chunks = build_time_chunks(segments)
             save_chunks(db, source_id, chunks)
 
+            if not source.language and transcript.language:
+                source.language = transcript.language[:10]
             source.status, source.status_detail = assess_extraction_quality(
                 [chunk.text for chunk in chunks]
             )
@@ -152,13 +163,25 @@ def _require_transcriber() -> None:
 def upload_audio(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
+    language: str | None = Form(default=None),
     project: ProjectDB = Depends(get_own_project),
     user: UserDB = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Upload an audio file. The answer comes back at once with status
-    PROCESSING; ask GET /sources/{id} to see when it is READY."""
+    PROCESSING; ask GET /sources/{id} to see when it is READY.
+
+    `language` is the language spoken in the recording, as a code such as
+    "fa" or "en". It is optional, but giving it avoids a wrong guess.
+    """
     _require_transcriber()
+
+    language = (language or "").strip().lower() or None
+    if language is not None and language not in transcription.supported_languages():
+        raise HTTPException(
+            status_code=400,
+            detail="Unknown language code"
+        )
 
     filename = (file.filename or "").strip()
     extension = os.path.splitext(filename)[1].lower()
@@ -193,6 +216,7 @@ def upload_audio(
             user_id=user.id,
             title=filename[:MAX_TITLE_CHARS],
             source_type="AUDIO",
+            language=language,
             file_path=to_stored_path(file_path),
             duration=math.ceil(duration),
             status="PROCESSING",

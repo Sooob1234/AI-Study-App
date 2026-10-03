@@ -54,26 +54,22 @@ def main() -> int:
         "/projects/", json={"title": "Live"}, headers=headers
     ).json()["id"]
 
-    for name, voice, text in (("english", "en-us", ENGLISH), ("persian", "fa", PERSIAN)):
-        path = os.path.join(folder, f"{name}.wav")
+    cases = (
+        ("english", "en-us", ENGLISH, None),
+        ("persian (language guessed)", "fa", PERSIAN, None),
+        ("persian (language given)", "fa", PERSIAN, "fa"),
+    )
+
+    for name, voice, text, language in cases:
+        path = os.path.join(folder, "speech.wav")
         speak(text, voice, path)
-
-        try:
-            # Called directly first, so that a failure shows its real cause.
-            transcription.transcribe(path)
-        except Exception:
-            import traceback
-
-            cause = traceback.format_exc()
-            if sys.exc_info()[1].__context__ is not None:
-                cause = "".join(traceback.format_exception(sys.exc_info()[1].__context__))
-            notice(f"audio {name} cause", cause[-900:])
 
         started = time.time()
         with open(path, "rb") as handle:
             created = client.post(
                 f"/projects/{project_id}/sources/audio",
-                files={"file": (f"{name}.wav", handle, "audio/wav")},
+                files={"file": ("speech.wav", handle, "audio/wav")},
+                data={} if language is None else {"language": language},
                 headers=headers,
             )
         if created.status_code != 200:
@@ -95,14 +91,25 @@ def main() -> int:
         notice(
             f"audio {name}",
             f"model={transcription.MODEL_NAME} status={source['status']} "
-            f"detail={source['status_detail']} audio={source['duration']}s "
+            f"detail={source['status_detail']} language={source['language']} "
+            f"audio={source['duration']}s "
             f"took={time.time() - started:.0f}s segments={len(segments)} "
             f"chunks={len(chunks)} heard=[{heard}]",
         )
 
+        if language == "fa":
+            # With the language given, the transcript must at least be in
+            # Persian script. (How accurate it is on a synthetic voice says
+            # little about real speech.)
+            persian_letters = sum("\u0600" <= c <= "\u06FF" for c in heard)
+            if source["status"] == "FAILED" or persian_letters < 20:
+                notice(name, "NOT AS EXPECTED: transcript is not in Persian script")
+                failed = True
+
         if name == "english":
             missing = [w for w in ENGLISH_WORDS if w not in heard.lower()]
-            if source["status"] != "READY" or missing or not chunks:
+            # The synthetic voice is not perfect; one missed word is allowed.
+            if source["status"] != "READY" or len(missing) > 1 or not chunks:
                 notice("audio english", f"NOT AS EXPECTED, missing words: {missing}")
                 failed = True
 
