@@ -10,6 +10,7 @@ from app.core.database import get_db
 from app.models.project import ProjectDB
 from app.models.source import SourceDB, SourceResponse, project_sources
 from app.models.source_page import SourcePageDB
+from app.services.text_cleaning import clean_extracted_text
 
 router = APIRouter(
     tags=["PDF Upload"]
@@ -92,7 +93,7 @@ async def upload_pdf(
             page_record = SourcePageDB(
                 source_id=source.id,
                 page_number=index + 1,
-                text=extracted_text.strip()
+                text=clean_extracted_text(extracted_text)
             )
 
             db.add(page_record)
