@@ -1,0 +1,648 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>نمونهٔ اولیه — AI Study App</title>
+<style>
+  :root {
+    --bg: #f6f7fb; --card: #ffffff; --ink: #1f2430; --muted: #6b7280;
+    --line: #e6e8ef; --accent: #5b6cf0; --accent-soft: #eceefe;
+    --ok: #1f9d6b; --ok-soft: #e3f6ee; --warn: #b7791f; --warn-soft: #fdf3dc;
+    --bad: #c2413b; --bad-soft: #fde8e7; --wait: #3b6fc2; --wait-soft: #e4eefb;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: Vazirmatn, "Segoe UI", Tahoma, "Noto Sans Arabic", sans-serif;
+    font-size: 15px; line-height: 1.8;
+  }
+  header {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 14px 20px; background: var(--card); border-bottom: 1px solid var(--line);
+  }
+  header h1 { font-size: 17px; margin: 0; }
+  header small { color: var(--muted); font-weight: 400; }
+  main { max-width: 980px; margin: 0 auto; padding: 20px 16px 60px; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 16px;
+    padding: 18px; margin-bottom: 16px; box-shadow: 0 2px 10px rgba(31,36,48,.04);
+  }
+  h2 { font-size: 16px; margin: 0 0 12px; }
+  h3 { font-size: 14px; margin: 0 0 8px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin: 8px 0 4px; }
+  input[type=text], input[type=email], input[type=password], select, textarea {
+    width: 100%; padding: 9px 12px; border: 1px solid var(--line); border-radius: 10px;
+    font: inherit; background: #fff; color: var(--ink);
+  }
+  input[type=file] { width: 100%; font: inherit; font-size: 13px; }
+  textarea { min-height: 90px; resize: vertical; }
+  input:focus, select:focus, textarea:focus, button:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 1px;
+  }
+  button {
+    font: inherit; border: 0; border-radius: 10px; padding: 9px 16px; cursor: pointer;
+    background: var(--accent); color: #fff;
+  }
+  button.soft { background: var(--accent-soft); color: var(--accent); }
+  button.danger { background: var(--bad-soft); color: var(--bad); }
+  button.small { padding: 4px 12px; font-size: 13px; }
+  button:disabled { opacity: .55; cursor: default; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; }
+  .row > * { flex: 1 1 180px; }
+  .row > button { flex: 0 0 auto; }
+  .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+  .add { border: 1px solid var(--line); border-radius: 14px; padding: 14px; }
+  .add button { margin-top: 12px; width: 100%; }
+  .hint { color: var(--muted); font-size: 12.5px; margin: 6px 0 0; }
+  details { margin-top: 10px; border-top: 1px dashed var(--line); padding-top: 8px; }
+  summary { cursor: pointer; color: var(--accent); font-size: 13.5px; }
+  .msg { margin: 10px 0 0; padding: 8px 12px; border-radius: 10px; font-size: 13.5px; display: none; }
+  .msg.show { display: block; }
+  .msg.error { background: var(--bad-soft); color: var(--bad); }
+  .msg.info { background: var(--wait-soft); color: var(--wait); }
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; }
+  .chip {
+    border: 1px solid var(--line); background: #fff; color: var(--ink);
+    border-radius: 999px; padding: 4px 14px; font-size: 13.5px;
+  }
+  .chip.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .source {
+    display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+    padding: 12px 0; border-top: 1px solid var(--line);
+  }
+  .source:first-child { border-top: 0; }
+  .source .title { flex: 1 1 220px; min-width: 0; overflow-wrap: anywhere; }
+  .source .meta { color: var(--muted); font-size: 12.5px; }
+  .badge { border-radius: 999px; padding: 2px 12px; font-size: 12.5px; white-space: nowrap; }
+  .badge.READY { background: var(--ok-soft); color: var(--ok); }
+  .badge.PROCESSING { background: var(--wait-soft); color: var(--wait); }
+  .badge.NEEDS_REVIEW { background: var(--warn-soft); color: var(--warn); }
+  .badge.FAILED { background: var(--bad-soft); color: var(--bad); }
+  .type { font-size: 12px; background: var(--accent-soft); color: var(--accent); border-radius: 8px; padding: 2px 8px; }
+  .piece { border-top: 1px solid var(--line); padding: 12px 0; }
+  .piece:first-child { border-top: 0; }
+  .piece .where { color: var(--accent); font-size: 12.5px; }
+  .piece .heading { color: var(--muted); font-size: 12.5px; }
+  .piece p { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  mark { background: #fff1a8; border-radius: 3px; }
+  .hidden { display: none !important; }
+  .empty { color: var(--muted); text-align: center; padding: 16px 0; }
+  bdi, .ltr { direction: ltr; unicode-bidi: isolate; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>AI Study App <small>— نمونهٔ اولیه برای آزمایش منبع‌ها</small></h1>
+  <div id="who" class="hidden">
+    <span id="who-name"></span>
+    <button class="soft small" id="logout">خروج</button>
+  </div>
+</header>
+
+<main>
+
+  <!-- ورود -->
+  <section class="card" id="auth">
+    <h2>ورود یا ساخت حساب</h2>
+    <div class="row">
+      <div><label for="name">نام (فقط برای ساخت حساب)</label><input type="text" id="name" autocomplete="name"></div>
+      <div><label for="email">ایمیل</label><input type="email" id="email" class="ltr" autocomplete="email"></div>
+      <div><label for="password">رمز (دست‌کم ۸ نویسه)</label><input type="password" id="password" class="ltr" autocomplete="current-password"></div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button id="login">ورود</button>
+      <button class="soft" id="register">ساخت حساب و ورود</button>
+    </div>
+    <p class="hint">این حساب فقط روی برنامهٔ خودتان ساخته می‌شود. اولین حساب، مالک داده‌های قبلی می‌شود.</p>
+    <div class="msg error" id="auth-msg"></div>
+  </section>
+
+  <div id="app" class="hidden">
+
+    <!-- پروژه‌ها -->
+    <section class="card">
+      <h2>۱. پروژه</h2>
+      <div class="chips" id="projects"></div>
+      <div class="row" style="margin-top:12px">
+        <div><label for="project-title">پروژهٔ جدید</label><input type="text" id="project-title" placeholder="مثلاً: ادبیات"></div>
+        <button class="soft" id="project-add">ساخت پروژه</button>
+      </div>
+      <div class="msg error" id="project-msg"></div>
+    </section>
+
+    <!-- افزودن منبع -->
+    <section class="card" id="add-card">
+      <h2>۲. افزودن منبع به «<span id="project-name"></span>»</h2>
+      <div class="grid">
+
+        <div class="add">
+          <h3>PDF</h3>
+          <input type="file" id="pdf-file" accept=".pdf,application/pdf">
+          <p class="hint">حداکثر ۵۰ مگابایت.</p>
+          <button id="pdf-add">آپلود PDF</button>
+        </div>
+
+        <div class="add">
+          <h3>صدا</h3>
+          <input type="file" id="audio-file" accept="audio/*,.mp3,.m4a,.wav,.ogg,.opus,.flac,.aac,.wma,.webm,.mp4">
+          <label for="audio-language">زبان گفتار</label>
+          <select id="audio-language">
+            <option value="fa">فارسی</option>
+            <option value="en">انگلیسی</option>
+            <option value="">تشخیص خودکار (ممکن است اشتباه کند)</option>
+          </select>
+          <p class="hint">حداکثر ۲۰۰ مگابایت و ۲ ساعت. پردازش چند دقیقه طول می‌کشد.</p>
+          <button id="audio-add">آپلود صدا</button>
+        </div>
+
+        <div class="add">
+          <h3>YouTube</h3>
+          <label for="yt-url">لینک ویدیو</label>
+          <input type="text" id="yt-url" class="ltr" placeholder="https://youtu.be/...">
+          <p class="hint">با همین لینک، برنامه خودش زیرنویس را از YouTube می‌گیرد. این فقط وقتی کار می‌کند که این کامپیوتر به YouTube دسترسی داشته باشد (فیلترشکن روشن).</p>
+          <details>
+            <summary>اگر گرفتن از YouTube ناموفق شد</summary>
+            <p class="hint">زیرنویس را خودتان بدهید: در صفحهٔ ویدیو در YouTube روی «…more» زیر ویدیو و بعد «Show transcript» بزنید، همهٔ متن را کپی کنید و اینجا بچسبانید. لینک بالا را هم پر کنید.</p>
+            <label for="yt-title">عنوان ویدیو (اختیاری)</label>
+            <input type="text" id="yt-title">
+            <label for="yt-text">متن زیرنویس</label>
+            <textarea id="yt-text" placeholder="0:05&#10;متن سطر اول&#10;0:12&#10;متن سطر دوم"></textarea>
+          </details>
+          <button id="yt-add">افزودن ویدیو</button>
+        </div>
+
+      </div>
+      <div class="msg" id="add-msg"></div>
+    </section>
+
+    <!-- منبع‌ها -->
+    <section class="card" id="sources-card">
+      <h2>۳. منبع‌های این پروژه</h2>
+      <div id="sources"></div>
+    </section>
+
+    <!-- نمایش -->
+    <section class="card hidden" id="viewer">
+      <h2>۴. محتوای «<span id="viewer-title"></span>»</h2>
+      <div class="row">
+        <div class="chips" style="flex:2 1 300px">
+          <button class="chip active" data-view="chunks">قطعه‌ها</button>
+          <button class="chip" data-view="raw" id="raw-tab">متن خام</button>
+        </div>
+        <div><input type="text" id="search" placeholder="جستجو در متن…"></div>
+      </div>
+      <p class="hint" id="viewer-count"></p>
+      <div id="pieces"></div>
+    </section>
+
+  </div>
+</main>
+
+<script>
+(function () {
+  "use strict";
+
+  var STATUS = {
+    PROCESSING: "در حال پردازش", READY: "آماده",
+    NEEDS_REVIEW: "نیازمند بررسی", FAILED: "ناموفق"
+  };
+  var REASON = {
+    NO_TEXT: "متنی در فایل پیدا نشد (شاید اسکن‌شده است)",
+    REVERSED_TEXT: "متن فارسی برعکس استخراج شده است",
+    NO_TRANSCRIPT: "این ویدیو زیرنویس ندارد",
+    VIDEO_UNAVAILABLE: "ویدیو در دسترس نیست",
+    BLOCKED_BY_YOUTUBE: "YouTube درخواست این سرور را رد کرد",
+    FETCH_FAILED: "دسترسی به YouTube ممکن نشد",
+    INTERRUPTED: "پردازش با خاموش شدن برنامه نیمه‌تمام ماند",
+    SERVER_BUSY: "سرور مشغول است",
+    NO_SPEECH: "گفتاری در فایل تشخیص داده نشد",
+    TRANSCRIPTION_FAILED: "تبدیل گفتار به متن شکست خورد",
+    TRANSCRIBER_UNAVAILABLE: "مدل تشخیص گفتار در دسترس نیست",
+    AUDIO_TOO_LONG: "فایل صوتی بلندتر از ۲ ساعت است"
+  };
+  var MESSAGE = {
+    "Invalid PDF file": "این فایل یک PDF سالم نیست.",
+    "Only PDF files are allowed": "فقط فایل PDF پذیرفته می‌شود.",
+    "Password-protected PDF files are not supported": "PDF رمزدار پشتیبانی نمی‌شود.",
+    "Invalid audio file": "این فایل صدای سالمی ندارد.",
+    "This kind of audio file is not supported": "این نوع فایل صوتی پشتیبانی نمی‌شود.",
+    "Audio processing is not installed on this server": "بخش صوتی روی این برنامه نصب نشده است (requirements-audio.txt).",
+    "The server is busy with other audio files; try again later": "سرور مشغول فایل‌های صوتی دیگر است؛ بعداً دوباره امتحان کنید.",
+    "The server is busy with other videos; try again later": "سرور مشغول ویدیوهای دیگر است؛ بعداً دوباره امتحان کنید.",
+    "Not a valid YouTube video link": "این لینک یک ویدیوی YouTube نیست.",
+    "The transcript is empty": "متن زیرنویس خالی است.",
+    "This email is already registered": "این ایمیل قبلاً ثبت شده است؛ «ورود» را بزنید.",
+    "Only a failed source can be retried": "فقط منبع ناموفق را می‌شود دوباره امتحان کرد.",
+    "The stored file of this source is missing": "فایل این منبع روی سرور پیدا نشد.",
+    "Project not found": "پروژه پیدا نشد.",
+    "Source not found": "منبع پیدا نشد."
+  };
+  var TYPE = { PDF: "PDF", AUDIO: "صدا", YOUTUBE: "YouTube", PODCAST: "پادکست" };
+
+  var token = null;
+  var project = null;      // { id, title }
+  var sources = [];
+  var viewing = null;      // { source, view, pieces }
+  var timer = null;
+
+  try { token = localStorage.getItem("study-token"); } catch (e) {}
+
+  function $(id) { return document.getElementById(id); }
+
+  function el(tag, cls, text) {
+    var node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text !== undefined && text !== null) node.textContent = text;
+    return node;
+  }
+
+  function show(id, text, kind) {
+    var box = $(id);
+    box.textContent = text || "";
+    box.className = "msg" + (text ? " show " + (kind || "error") : "");
+  }
+
+  function explain(status, data) {
+    var detail = data && data.detail;
+    if (Array.isArray(detail)) {
+      detail = detail.map(function (d) { return d.msg; }).join("؛ ");
+    }
+    if (status === 401) return "ایمیل یا رمز درست نیست، یا باید دوباره وارد شوید.";
+    if (status === 413) return "فایل بزرگ‌تر از حد مجاز است.";
+    if (status === 429) return "چند منبع شما هنوز در حال پردازش است؛ صبر کنید تا یکی تمام شود.";
+    if (status === 422) return "ورودی درست نیست: " + (detail || "") + " (ایمیل معتبر، رمز دست‌کم ۸ نویسه، نام و عنوان غیرخالی)";
+    if (MESSAGE[detail]) return MESSAGE[detail];
+    if (/^PDF has more than/.test(detail || "")) return "PDF بیشتر از ۲۰۰۰ صفحه دارد.";
+    if (/^Audio is longer than/.test(detail || "")) return "فایل صوتی بلندتر از ۲ ساعت است.";
+    return (detail || "خطای ناشناخته") + " (کد " + status + ")";
+  }
+
+  function api(method, path, options) {
+    options = options || {};
+    var headers = {};
+    if (token) headers["Authorization"] = "Bearer " + token;
+    var body = options.body;
+    if (options.json !== undefined) {
+      headers["Content-Type"] = "application/json";
+      body = JSON.stringify(options.json);
+    }
+    return fetch(path, { method: method, headers: headers, body: body })
+      .then(function (response) {
+        return response.json().catch(function () { return null; })
+          .then(function (data) {
+            if (response.status === 401 && token && !options.auth) { signOut(); }
+            if (!response.ok) { throw new Error(explain(response.status, data)); }
+            return data;
+          });
+      }, function () {
+        throw new Error("ارتباط با برنامه برقرار نشد. آیا برنامه در حال اجراست؟");
+      });
+  }
+
+  /* ---------- ورود ---------- */
+
+  function signIn() {
+    var form = new URLSearchParams();
+    form.set("username", $("email").value.trim());
+    form.set("password", $("password").value);
+    return api("POST", "/auth/login", { body: form, auth: true }).then(function (data) {
+      token = data.access_token;
+      try { localStorage.setItem("study-token", token); } catch (e) {}
+      return start();
+    });
+  }
+
+  function signOut() {
+    token = null; project = null; sources = []; viewing = null;
+    try { localStorage.removeItem("study-token"); } catch (e) {}
+    clearInterval(timer);
+    $("app").classList.add("hidden");
+    $("who").classList.add("hidden");
+    $("auth").classList.remove("hidden");
+  }
+
+  $("login").onclick = function () {
+    show("auth-msg");
+    signIn().catch(function (e) { show("auth-msg", e.message); });
+  };
+
+  $("register").onclick = function () {
+    show("auth-msg");
+    api("POST", "/auth/register", { auth: true, json: {
+      name: $("name").value, email: $("email").value.trim(), password: $("password").value
+    } }).then(signIn).catch(function (e) { show("auth-msg", e.message); });
+  };
+
+  $("logout").onclick = signOut;
+
+  function start() {
+    return api("GET", "/auth/me").then(function (me) {
+      $("who-name").textContent = me.name;
+      $("who").classList.remove("hidden");
+      $("auth").classList.add("hidden");
+      $("app").classList.remove("hidden");
+      return loadProjects();
+    });
+  }
+
+  /* ---------- پروژه‌ها ---------- */
+
+  function loadProjects(selectId) {
+    return api("GET", "/projects/").then(function (list) {
+      var box = $("projects");
+      box.textContent = "";
+      if (!list.length) box.appendChild(el("span", "hint", "هنوز پروژه‌ای ندارید؛ یکی بسازید."));
+      list.forEach(function (item) {
+        var chip = el("button", "chip", item.title);
+        chip.onclick = function () { selectProject(item); };
+        chip.dataset.id = item.id;
+        box.appendChild(chip);
+      });
+      var wanted = list.filter(function (p) { return p.id === selectId; })[0]
+        || (project && list.filter(function (p) { return p.id === project.id; })[0])
+        || list[0];
+      if (wanted) return selectProject(wanted);
+      project = null;
+      $("add-card").classList.add("hidden");
+      $("sources-card").classList.add("hidden");
+    });
+  }
+
+  function selectProject(item) {
+    project = item;
+    viewing = null;
+    $("viewer").classList.add("hidden");
+    $("project-name").textContent = item.title;
+    $("add-card").classList.remove("hidden");
+    $("sources-card").classList.remove("hidden");
+    Array.prototype.forEach.call($("projects").children, function (chip) {
+      chip.classList.toggle("active", Number(chip.dataset.id) === item.id);
+    });
+    show("add-msg");
+    return loadSources();
+  }
+
+  $("project-add").onclick = function () {
+    show("project-msg");
+    api("POST", "/projects/", { json: { title: $("project-title").value } })
+      .then(function (created) { $("project-title").value = ""; return loadProjects(created.id); })
+      .catch(function (e) { show("project-msg", e.message); });
+  };
+
+  /* ---------- منبع‌ها ---------- */
+
+  function clock(seconds) {
+    seconds = Math.max(0, Math.floor(seconds));
+    var h = Math.floor(seconds / 3600), m = Math.floor(seconds % 3600 / 60), s = seconds % 60;
+    function two(n) { return (n < 10 ? "0" : "") + n; }
+    return (h ? h + ":" + two(m) : m) + ":" + two(s);
+  }
+
+  function loadSources() {
+    if (!project) return Promise.resolve();
+    var id = project.id;
+    return api("GET", "/projects/" + id + "/sources/").then(function (list) {
+      if (!project || project.id !== id) return;
+      sources = list;
+      renderSources();
+      clearInterval(timer);
+      if (list.some(function (s) { return s.status === "PROCESSING"; })) {
+        timer = setInterval(loadSources, 3000);
+      }
+    }).catch(function () {});
+  }
+
+  function renderSources() {
+    var box = $("sources");
+    box.textContent = "";
+    if (!sources.length) { box.appendChild(el("div", "empty", "هنوز منبعی اضافه نشده است.")); return; }
+
+    sources.forEach(function (source) {
+      var row = el("div", "source");
+      row.appendChild(el("span", "type", TYPE[source.source_type] || source.source_type));
+
+      var title = el("div", "title");
+      title.appendChild(el("bdi", null, source.title));
+      var meta = [];
+      if (source.page_count) meta.push(source.page_count + " صفحه");
+      if (source.duration) meta.push("مدت " + clock(source.duration));
+      if (source.language) meta.push("زبان " + source.language);
+      if (source.status_detail) meta.push(REASON[source.status_detail] || source.status_detail);
+      title.appendChild(el("div", "meta", meta.join(" · ")));
+      row.appendChild(title);
+
+      row.appendChild(el("span", "badge " + source.status, STATUS[source.status] || source.status));
+
+      var view = el("button", "soft small", "مشاهده");
+      view.disabled = source.status === "PROCESSING" || source.status === "FAILED";
+      view.onclick = function () { openSource(source); };
+      row.appendChild(view);
+
+      if (source.status === "FAILED" && source.source_type !== "PDF") {
+        var retry = el("button", "soft small", "تلاش دوباره");
+        retry.onclick = function () {
+          show("add-msg");
+          api("POST", "/sources/" + source.id + "/retry").then(loadSources)
+            .catch(function (e) { show("add-msg", e.message); });
+        };
+        row.appendChild(retry);
+      }
+
+      var remove = el("button", "danger small", "حذف");
+      remove.onclick = function () {
+        if (!confirm("«" + source.title + "» حذف شود؟ این کار برگشت‌پذیر نیست.")) return;
+        api("DELETE", "/sources/" + source.id).then(function () {
+          if (viewing && viewing.source.id === source.id) {
+            viewing = null; $("viewer").classList.add("hidden");
+          }
+          return loadSources();
+        }).catch(function (e) { show("add-msg", e.message); });
+      };
+      row.appendChild(remove);
+
+      box.appendChild(row);
+    });
+  }
+
+  function upload(buttonId, path, form, working) {
+    var button = $(buttonId), label = button.textContent;
+    button.disabled = true; button.textContent = working;
+    show("add-msg", "در حال فرستادن… لطفاً صبر کنید.", "info");
+    return api("POST", path, form).then(function (source) {
+      show("add-msg", source.status === "PROCESSING"
+        ? "دریافت شد و در حال پردازش است. وضعیت خودکار به‌روز می‌شود."
+        : "انجام شد: " + (STATUS[source.status] || source.status), "info");
+      return loadSources();
+    }).catch(function (e) { show("add-msg", e.message); })
+      .then(function () { button.disabled = false; button.textContent = label; });
+  }
+
+  $("pdf-add").onclick = function () {
+    var file = $("pdf-file").files[0];
+    if (!file) return show("add-msg", "اول یک فایل PDF انتخاب کنید.");
+    var form = new FormData(); form.append("file", file);
+    upload("pdf-add", "/projects/" + project.id + "/sources/pdf", { body: form }, "در حال آپلود…")
+      .then(function () { $("pdf-file").value = ""; });
+  };
+
+  $("audio-add").onclick = function () {
+    var file = $("audio-file").files[0];
+    if (!file) return show("add-msg", "اول یک فایل صوتی انتخاب کنید.");
+    var form = new FormData(); form.append("file", file);
+    if ($("audio-language").value) form.append("language", $("audio-language").value);
+    upload("audio-add", "/projects/" + project.id + "/sources/audio", { body: form }, "در حال آپلود…")
+      .then(function () { $("audio-file").value = ""; });
+  };
+
+  /* زیرنویس چسبانده‌شده: هر سطر «زمان متن»؛ سطر بدون زمان ۵ ثانیه بعد از قبلی. */
+  function parseTranscript(text) {
+    var starts = [], texts = [];
+    text.split("\n").forEach(function (line) {
+      line = line.trim();
+      if (!line) return;
+      var match = line.match(/^(?:(\d{1,2}):)?(\d{1,2}):(\d{2})(?:[.,]\d+)?\s*(.*)$/);
+      if (match && !match[4]) {
+        // سطری که فقط زمان است: متنش در سطر بعد می‌آید.
+        starts.push((+match[1] || 0) * 3600 + (+match[2]) * 60 + (+match[3]));
+        texts.push("");
+      } else if (match) {
+        starts.push((+match[1] || 0) * 3600 + (+match[2]) * 60 + (+match[3]));
+        texts.push(match[4]);
+      } else if (texts.length && texts[texts.length - 1] === "") {
+        texts[texts.length - 1] = line;
+      } else {
+        starts.push(starts.length ? starts[starts.length - 1] + 5 : 0);
+        texts.push(line);
+      }
+    });
+    var segments = [];
+    for (var i = 0; i < starts.length; i++) {
+      if (!texts[i]) continue;
+      var next = i + 1 < starts.length ? starts[i + 1] : starts[i] + 5;
+      segments.push({ start: starts[i], duration: Math.min(30, Math.max(1, next - starts[i])), text: texts[i].slice(0, 2000) });
+    }
+    return segments;
+  }
+
+  $("yt-add").onclick = function () {
+    var url = $("yt-url").value.trim();
+    if (!url) return show("add-msg", "لینک ویدیو را وارد کنید.");
+    var body = { url: url };
+    var pasted = $("yt-text").value.trim();
+    if (pasted) {
+      body.segments = parseTranscript(pasted);
+      if (!body.segments.length) return show("add-msg", "متن زیرنویس خوانده نشد.");
+      if ($("yt-title").value.trim()) body.title = $("yt-title").value.trim();
+    }
+    upload("yt-add", "/projects/" + project.id + "/sources/youtube", { json: body }, "در حال افزودن…")
+      .then(function () { $("yt-url").value = ""; $("yt-text").value = ""; $("yt-title").value = ""; });
+  };
+
+  /* ---------- نمایش محتوا ---------- */
+
+  function openSource(source) {
+    var isPdf = source.source_type === "PDF";
+    viewing = { source: source, view: "chunks", pieces: { chunks: null, raw: null } };
+    $("viewer-title").textContent = source.title;
+    $("raw-tab").textContent = isPdf ? "متن صفحه‌ها" : "متن زمان‌دار";
+    $("search").value = "";
+    $("viewer").classList.remove("hidden");
+    setView("chunks");
+    $("viewer").scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function setView(view) {
+    if (!viewing) return;
+    viewing.view = view;
+    Array.prototype.forEach.call(document.querySelectorAll("[data-view]"), function (tab) {
+      tab.classList.toggle("active", tab.dataset.view === view);
+    });
+    if (viewing.pieces[view]) return renderPieces();
+
+    var source = viewing.source;
+    var path = "/sources/" + source.id + (view === "chunks" ? "/chunks/"
+      : source.source_type === "PDF" ? "/pages/" : "/segments/");
+    $("pieces").textContent = "";
+    $("pieces").appendChild(el("div", "empty", "در حال دریافت…"));
+    api("GET", path).then(function (list) {
+      if (!viewing || viewing.source.id !== source.id) return;
+      viewing.pieces[view] = list;
+      renderPieces();
+    }).catch(function (e) {
+      $("pieces").textContent = "";
+      $("pieces").appendChild(el("div", "empty", e.message));
+    });
+  }
+
+  function where(piece) {
+    if (piece.page_number) return "صفحهٔ " + piece.page_number;
+    if (piece.page_start) {
+      return piece.page_start === piece.page_end
+        ? "صفحهٔ " + piece.page_start
+        : "صفحه‌های " + piece.page_start + " تا " + piece.page_end;
+    }
+    if (piece.start_seconds !== null && piece.start_seconds !== undefined) {
+      return clock(piece.start_seconds) + " تا " + clock(piece.end_seconds);
+    }
+    return "";
+  }
+
+  function highlighted(text, query) {
+    var p = el("p");
+    if (!query) { p.textContent = text; return p; }
+    var lower = text.toLowerCase(), q = query.toLowerCase(), from = 0, at;
+    while ((at = lower.indexOf(q, from)) !== -1) {
+      p.appendChild(document.createTextNode(text.slice(from, at)));
+      p.appendChild(el("mark", null, text.slice(at, at + q.length)));
+      from = at + q.length;
+    }
+    p.appendChild(document.createTextNode(text.slice(from)));
+    return p;
+  }
+
+  function renderPieces() {
+    var list = viewing.pieces[viewing.view] || [];
+    var query = $("search").value.trim();
+    var box = $("pieces");
+    box.textContent = "";
+
+    var matches = 0;
+    var shown = list.filter(function (piece) {
+      if (!query) return true;
+      var count = piece.text.toLowerCase().split(query.toLowerCase()).length - 1;
+      matches += count;
+      return count > 0;
+    });
+
+    var unit = viewing.view === "chunks" ? "قطعه"
+      : viewing.source.source_type === "PDF" ? "صفحه" : "تکهٔ زمان‌دار";
+    $("viewer-count").textContent = query
+      ? "«" + query + "» " + matches + " بار در " + shown.length + " " + unit + " پیدا شد (از " + list.length + ")."
+      : list.length + " " + unit;
+
+    if (!shown.length) { box.appendChild(el("div", "empty", query ? "چیزی پیدا نشد." : "محتوایی وجود ندارد.")); return; }
+
+    shown.slice(0, 300).forEach(function (piece) {
+      var item = el("div", "piece");
+      item.appendChild(el("span", "where", where(piece)));
+      if (piece.heading) { item.appendChild(document.createTextNode(" ")); item.appendChild(el("span", "heading", "— " + piece.heading)); }
+      item.appendChild(highlighted(piece.text, query));
+      box.appendChild(item);
+    });
+    if (shown.length > 300) box.appendChild(el("div", "empty", "فقط ۳۰۰ مورد اول نمایش داده شد."));
+  }
+
+  Array.prototype.forEach.call(document.querySelectorAll("[data-view]"), function (tab) {
+    tab.onclick = function () { setView(tab.dataset.view); };
+  });
+  $("search").oninput = function () { if (viewing) renderPieces(); };
+
+  /* ---------- شروع ---------- */
+
+  if (token) { start().catch(signOut); }
+})();
+</script>
+</body>
+</html>

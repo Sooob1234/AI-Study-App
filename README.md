@@ -23,6 +23,9 @@ uvicorn app.main:app --reload
 
 Swagger UI: http://127.0.0.1:8000/docs
 
+Test page (Persian, for trying PDF, audio and YouTube by hand):
+http://127.0.0.1:8000/prototype
+
 ## Endpoints
 
 | Method | Path | Purpose |

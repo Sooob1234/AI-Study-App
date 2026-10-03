@@ -5,6 +5,7 @@ from app.core.limits import request_limit_for
 from app.core.upload_gate import refuse_before_reading
 
 from app.api.auth import router as auth_router
+from app.api.prototype import router as prototype_router
 from app.api.projects import router as projects_router
 from app.api.sources import router as sources_router
 from app.api.pdf_upload import router as pdf_upload_router
@@ -47,6 +48,7 @@ app.add_middleware(
     refuse_before_reading=refuse_before_reading,
 )
 
+app.include_router(prototype_router)
 app.include_router(auth_router)
 app.include_router(projects_router)
 app.include_router(sources_router)
