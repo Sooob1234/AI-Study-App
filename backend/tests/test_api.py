@@ -577,3 +577,27 @@ def test_source_cut_off_by_a_restart_is_marked_failed(client, new_user, monkeypa
     # An interrupted source can be picked up again.
     assert client.post(f"/sources/{audio['id']}/retry", headers=headers).status_code == 200
     assert client.get(f"/sources/{audio['id']}", headers=headers).json()["status"] == "READY"
+
+
+def test_the_recogniser_can_read_an_audio_file(tmp_path):
+    """The recogniser's own audio reading, without the recognition model.
+
+    Guards against an audio library version that the recogniser cannot use.
+    """
+    import pytest
+
+    from app.services import transcription
+
+    if not transcription.is_available():
+        pytest.skip("the optional audio packages are not installed")
+
+    from faster_whisper.audio import decode_audio
+
+    path = tmp_path / "tone.wav"
+    path.write_bytes(_wav(seconds=2.0))
+
+    samples = decode_audio(str(path))
+
+    # Two seconds at the recogniser's own rate of 16000 samples a second.
+    assert abs(len(samples) - 32000) < 1600
+    assert transcription.probe_audio(str(path)) == pytest.approx(2.0, abs=0.05)
