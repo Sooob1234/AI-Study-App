@@ -23,6 +23,9 @@ _CHAR_REPLACEMENTS = {
 
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
+_SURROGATES = re.compile(r"[\ud800-\udfff]")
+_PRESENTATION_FORMS = re.compile(r"[\uFB50-\uFDFF\uFE70-\uFEFC]+")
+
 _BRACKET_PAIRS = [("(", ")"), ("\u00AB", "\u00BB"), ("[", "]")]
 
 # A number at the start of a line followed by a single bracket, e.g. "1)"
@@ -78,8 +81,16 @@ def clean_extracted_text(text: str | None) -> str:
     if not text:
         return ""
 
-    # Presentation-form letters -> standard letters
-    text = unicodedata.normalize("NFKC", text)
+    # Characters that cannot be stored at all.
+    text = _SURROGATES.sub("", text)
+
+    # Presentation-form letters -> standard letters. Only the Arabic-script
+    # presentation forms are converted; everything else is left as it is,
+    # so that x² does not turn into x2.
+    text = _PRESENTATION_FORMS.sub(
+        lambda match: unicodedata.normalize("NFKC", match.group()),
+        text,
+    )
 
     # Invisible control characters (the database rejects some of them);
     # line breaks and tabs are kept.

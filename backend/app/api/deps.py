@@ -1,6 +1,6 @@
 """Shared checks used by the endpoints: who is asking, and is it theirs?"""
 
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Path
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 
@@ -9,6 +9,7 @@ from app.core.security import read_access_token
 from app.models.project import ProjectDB
 from app.models.source import SourceDB
 from app.models.user import UserDB
+from app.models.validation import MAX_DB_INTEGER
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
@@ -37,7 +38,7 @@ def get_current_user(
 # that nobody can learn which ids exist.
 
 def get_own_project(
-    project_id: int,
+    project_id: int = Path(ge=1, le=MAX_DB_INTEGER),
     user: UserDB = Depends(get_current_user),
     db: Session = Depends(get_db)
 ) -> ProjectDB:
@@ -56,7 +57,7 @@ def get_own_project(
 
 
 def get_own_source(
-    source_id: int,
+    source_id: int = Path(ge=1, le=MAX_DB_INTEGER),
     user: UserDB = Depends(get_current_user),
     db: Session = Depends(get_db)
 ) -> SourceDB:

@@ -6,6 +6,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.clock import utc_now
 from app.core.database import Base
+from app.models.validation import clean_short_text
 
 
 class UserDB(Base):
@@ -38,11 +39,8 @@ class UserCreate(BaseModel):
 
     @field_validator("name")
     @classmethod
-    def name_not_blank(cls, value: str) -> str:
-        value = value.strip()
-        if not value:
-            raise ValueError("Name must not be empty")
-        return value
+    def name_is_clean(cls, value: str) -> str:
+        return clean_short_text(value, "Name")
 
 
 class UserResponse(BaseModel):

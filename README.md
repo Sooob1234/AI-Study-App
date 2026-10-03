@@ -32,7 +32,7 @@ Swagger UI: http://127.0.0.1:8000/docs
 | GET | `/auth/me` | The logged-in user |
 | GET / POST | `/projects/` | List / create projects |
 | GET | `/projects/{id}` | One project |
-| GET / POST | `/projects/{id}/sources/` | List sources / add a non-PDF source |
+| GET | `/projects/{id}/sources/` | List the sources of a project |
 | POST | `/projects/{id}/sources/pdf` | Upload a PDF (max 50 MB) |
 | GET | `/sources/{id}` | One source and its processing status |
 | GET | `/sources/{id}/pages/` | Extracted text, page by page |
@@ -59,6 +59,13 @@ The database structure is updated automatically when the app starts
 
 upload → store file → extract text per page → clean text → chunk by heading →
 quality check → `READY` or `NEEDS_REVIEW`.
+
+A source that is `NEEDS_REVIEW` says why in `status_detail`: `NO_TEXT` (for
+example a scanned PDF) or `REVERSED_TEXT` (Persian letters came out mirrored).
+
+Known limits of the extracted text: half-spaces are lost, tables become
+consecutive lines, highlights are lost, and there is no OCR. Headings are
+recognised only when they are numbered (`3-`, `3 -2-`).
 
 Source processing (`app/services`) is kept separate from AI output generation,
 which is not built yet.
