@@ -10,6 +10,7 @@ from app.core.database import get_db
 from app.models.project import ProjectDB
 from app.models.source import SourceDB, SourceResponse, project_sources
 from app.models.source_page import SourcePageDB
+from app.services.quality_check import assess_extraction_quality
 from app.services.text_cleaning import clean_extracted_text
 
 router = APIRouter(
@@ -87,18 +88,24 @@ async def upload_pdf(
     )
 
     try:
+        page_texts = []
+
         for index, page in enumerate(reader.pages):
             extracted_text = page.extract_text() or ""
+            cleaned_text = clean_extracted_text(extracted_text)
+            page_texts.append(cleaned_text)
 
             page_record = SourcePageDB(
                 source_id=source.id,
                 page_number=index + 1,
-                text=clean_extracted_text(extracted_text)
+                text=cleaned_text
             )
 
             db.add(page_record)
 
-        source.status = "READY"
+        # READY only if the extracted text is usable; an empty or broken
+        # text makes the source NEEDS_REVIEW instead.
+        source.status = assess_extraction_quality(page_texts)
 
         db.commit()
         db.refresh(source)
