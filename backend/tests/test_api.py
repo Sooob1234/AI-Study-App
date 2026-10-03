@@ -1024,3 +1024,13 @@ def test_jobs_really_run_in_the_background(client, new_user, monkeypatch):
             break
         time.sleep(0.1)
     assert source["status"] == "READY"
+
+
+def test_the_prototype_page_is_served_without_login(client):
+    response = client.get("/prototype")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert 'dir="rtl"' in response.text
+    # It is a test tool, not part of the documented interface.
+    assert "/prototype" not in client.get("/openapi.json").json()["paths"]
