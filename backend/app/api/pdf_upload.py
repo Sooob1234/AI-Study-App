@@ -1,0 +1,116 @@
+import os
+import uuid
+
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from pypdf import PdfReader
+from sqlalchemy import insert
+from sqlalchemy.orm import Session
+
+from app.core.database import get_db
+from app.models.project import ProjectDB
+from app.models.source import SourceDB, SourceResponse, project_sources
+from app.models.source_page import SourcePageDB
+
+router = APIRouter(
+    tags=["PDF Upload"]
+)
+
+UPLOAD_DIR = "uploads/pdfs"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+
+@router.post(
+    "/projects/{project_id}/sources/pdf",
+    response_model=SourceResponse
+)
+async def upload_pdf(
+    project_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
+    project = db.query(ProjectDB).filter(
+        ProjectDB.id == project_id
+    ).first()
+
+    if project is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Project not found"
+        )
+
+    if not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(
+            status_code=400,
+            detail="Only PDF files are allowed"
+        )
+
+    unique_name = f"{uuid.uuid4()}.pdf"
+    file_path = os.path.join(
+        UPLOAD_DIR,
+        unique_name
+    )
+
+    contents = await file.read()
+
+    with open(file_path, "wb") as buffer:
+        buffer.write(contents)
+
+    try:
+        reader = PdfReader(file_path)
+        page_count = len(reader.pages)
+    except Exception:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid PDF file"
+        )
+
+    source = SourceDB(
+        title=file.filename,
+        source_type="PDF",
+        file_path=file_path,
+        page_count=page_count,
+        status="PROCESSING"
+    )
+
+    db.add(source)
+    db.flush()
+
+    db.execute(
+        insert(project_sources).values(
+            project_id=project_id,
+            source_id=source.id
+        )
+    )
+
+    try:
+        for index, page in enumerate(reader.pages):
+            extracted_text = page.extract_text() or ""
+
+            page_record = SourcePageDB(
+                source_id=source.id,
+                page_number=index + 1,
+                text=extracted_text.strip()
+            )
+
+            db.add(page_record)
+
+        source.status = "READY"
+
+        db.commit()
+        db.refresh(source)
+
+    except Exception:
+        db.rollback()
+
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
+        raise HTTPException(
+            status_code=500,
+            detail="PDF text extraction failed"
+        )
+
+    return source
