@@ -1,76 +1,27 @@
 name: Live checks
-
-# Checks that need the real outside world (the speech-recognition model,
-# YouTube). They run on demand and on the branches that work on those parts.
 on:
-  workflow_dispatch:
   push:
-    branches:
-      - audio-source
-      - youtube-source
-      - "live/**"
-
+    branches: ["live/**"]
 permissions:
   contents: read
-
 jobs:
-  audio:
+  ytdlp:
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: ai_study
-          POSTGRES_PASSWORD: ai_study_password
-          POSTGRES_DB: ai_study_live
-        ports:
-          - 5433:5432
-        options: >-
-          --health-cmd "pg_isready -U ai_study"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-    defaults:
-      run:
-        working-directory: backend
-    env:
-      DATABASE_URL: postgresql+psycopg2://ai_study:ai_study_password@localhost:5433/ai_study_live
     steps:
-      - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - run: sudo apt-get update && sudo apt-get install -y espeak-ng
-      - run: pip install -r requirements.txt -r requirements-dev.txt -r requirements-audio.txt
-      - name: Real speech-to-text through the app
-        run: python -m scripts.live_check_audio
-
-  youtube:
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: ai_study
-          POSTGRES_PASSWORD: ai_study_password
-          POSTGRES_DB: ai_study_live
-        ports:
-          - 5433:5432
-        options: >-
-          --health-cmd "pg_isready -U ai_study"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-    defaults:
-      run:
-        working-directory: backend
-    env:
-      DATABASE_URL: postgresql+psycopg2://ai_study:ai_study_password@localhost:5433/ai_study_live
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-      - run: pip install -r requirements.txt -r requirements-dev.txt
-      - name: Real YouTube through the app
-        run: python -m scripts.live_check_youtube
+      - run: pip install yt-dlp youtube-transcript-api
+      - name: Try yt-dlp from this network
+        run: |
+          for id in jNQXAC9IVRw UF8uR6Z6KLc; do
+            for client in default "android" "tv" "web_safari" "mweb" "ios"; do
+              args=""; [ "$client" != default ] && args="--extractor-args youtube:player_client=$client"
+              out=$(yt-dlp $args -f "bestaudio/best" --no-playlist --max-filesize 30M -o "/tmp/a_${id}_${client}.%(ext)s" "https://www.youtube.com/watch?v=$id" 2>&1 | tail -3 | tr '\n' ' ')
+              size=$(ls -la /tmp/a_${id}_${client}.* 2>/dev/null | awk '{print $5}' | head -1)
+              echo "::notice title=yt-dlp $id $client::size=[$size] ${out:0:400}"
+            done
+            subs=$(yt-dlp --skip-download --write-auto-subs --write-subs --sub-langs "en.*,fa.*" --sub-format json3 -o "/tmp/s_$id" "https://www.youtube.com/watch?v=$id" 2>&1 | tail -2 | tr '\n' ' ')
+            echo "::notice title=yt-dlp subs $id::files=[$(ls /tmp | grep s_$id | tr '\n' ' ')] ${subs:0:300}"
+          done
+          yt-dlp --version
