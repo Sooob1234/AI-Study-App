@@ -61,12 +61,20 @@ def reversed_word_share(page_texts: list[str]) -> float:
     return reversed_count / total
 
 
-def assess_extraction_quality(page_texts: list[str]) -> str:
-    """Return the status a source should get: "READY" or "NEEDS_REVIEW"."""
+# Reasons reported together with NEEDS_REVIEW.
+NO_TEXT = "NO_TEXT"
+REVERSED_TEXT = "REVERSED_TEXT"
+
+
+def assess_extraction_quality(page_texts: list[str]) -> tuple[str, str | None]:
+    """Return (status, reason) for a source from its extracted texts.
+
+    The status is "READY" (reason None) or "NEEDS_REVIEW" with a reason.
+    """
     if empty_page_share(page_texts) >= MAX_EMPTY_PAGE_SHARE:
-        return "NEEDS_REVIEW"
+        return "NEEDS_REVIEW", NO_TEXT
 
     if reversed_word_share(page_texts) > MAX_REVERSED_SHARE:
-        return "NEEDS_REVIEW"
+        return "NEEDS_REVIEW", REVERSED_TEXT
 
-    return "READY"
+    return "READY", None

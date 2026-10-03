@@ -34,10 +34,13 @@ MAX_HEADING_CHARS = 120
 @dataclass
 class Chunk:
     chunk_index: int
-    page_start: int
-    page_end: int
     heading: str | None
     text: str
+    # A chunk comes either from pages (PDF) or from a time span (video, audio).
+    page_start: int | None = None
+    page_end: int | None = None
+    start_seconds: float | None = None
+    end_seconds: float | None = None
 
 
 def _parse_heading(line: str) -> tuple[int, str] | None:
@@ -163,4 +166,45 @@ def build_chunks(pages: list[tuple[int, str]]) -> list[Chunk]:
         current.append((page_number, line))
 
     close(joinable=True)
+    return chunks
+
+
+def build_time_chunks(segments: list[tuple[float, float, str]]) -> list[Chunk]:
+    """Turn (start_seconds, end_seconds, text) transcript pieces into chunks.
+
+    Transcript pieces are short fragments of speech, so they are joined
+    with spaces until a chunk is full. Each chunk keeps the time span it
+    covers, so that answers can cite "00:24:18".
+    """
+    chunks: list[Chunk] = []
+    current: list[tuple[float, float, str]] = []
+    size = 0
+
+    def close() -> None:
+        nonlocal current, size
+        if not current:
+            return
+
+        chunks.append(Chunk(
+            chunk_index=len(chunks),
+            heading=None,
+            text=" ".join(text for _, _, text in current),
+            start_seconds=current[0][0],
+            end_seconds=max(end for _, end, _ in current),
+        ))
+        current = []
+        size = 0
+
+    for start, end, text in segments:
+        text = " ".join(text.split())
+        if not text:
+            continue
+
+        if current and size + len(text) > MAX_CHUNK_CHARS:
+            close()
+
+        current.append((start, end, text))
+        size += len(text) + 1
+
+    close()
     return chunks

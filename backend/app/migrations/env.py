@@ -10,6 +10,7 @@ from app.models import (  # noqa: F401
     source,
     source_chunk,
     source_page,
+    source_segment,
     user,
 )
 

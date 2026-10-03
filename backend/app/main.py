@@ -6,6 +6,7 @@ from app.api.sources import router as sources_router
 from app.api.pdf_upload import router as pdf_upload_router
 from app.api.source_pages import router as source_pages_router
 from app.api.source_chunks import router as source_chunks_router
+from app.api.source_segments import router as source_segments_router
 
 from app.core.migrate import run_migrations
 
@@ -14,6 +15,7 @@ from app.models.project import ProjectDB
 from app.models.source import SourceDB, project_sources
 from app.models.source_page import SourcePageDB
 from app.models.source_chunk import SourceChunkDB
+from app.models.source_segment import SourceSegmentDB
 
 
 # Creates missing tables and applies any new change to the database
@@ -33,6 +35,7 @@ app.include_router(sources_router)
 app.include_router(pdf_upload_router)
 app.include_router(source_pages_router)
 app.include_router(source_chunks_router)
+app.include_router(source_segments_router)
 
 
 @app.get("/")

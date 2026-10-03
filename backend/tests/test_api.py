@@ -81,6 +81,7 @@ def test_everything_needs_a_login(client):
         ("get", "/sources/1/pages/"),
         ("get", "/sources/1/chunks/"),
         ("post", "/sources/1/chunks/"),
+        ("get", "/sources/1/segments/"),
         ("get", "/auth/me"),
     ]
 
@@ -115,6 +116,7 @@ def test_pdf_upload_extracts_pages_and_chunks(client, new_user):
     assert response.status_code == 200, response.text
     source = response.json()
     assert source["status"] == "READY"
+    assert source["status_detail"] is None
     assert source["page_count"] == 2
     assert os.path.isfile(source["file_path"])
 
@@ -131,6 +133,10 @@ def test_pdf_upload_extracts_pages_and_chunks(client, new_user):
     ]
     assert [(c["page_start"], c["page_end"]) for c in chunks] == [(1, 1), (2, 2)]
 
+    assert client.get(
+        f"/sources/{source['id']}/segments/", headers=headers
+    ).json() == []
+
     rebuilt = client.post(f"/sources/{source['id']}/chunks/", headers=headers)
     assert rebuilt.json()["chunk_count"] == len(chunks)
 
@@ -144,6 +150,7 @@ def test_pdf_without_text_needs_review(client, new_user):
 
     source = _upload(client, headers, project_id, BLANK_PDF).json()
     assert source["status"] == "NEEDS_REVIEW"
+    assert source["status_detail"] == "NO_TEXT"
 
 
 def test_bad_uploads_are_rejected_and_leave_no_file(client, new_user):
@@ -223,6 +230,7 @@ def test_users_cannot_reach_each_others_data(client, new_user):
         client.get(f"/sources/{source_id}/pages/", headers=stranger),
         client.get(f"/sources/{source_id}/chunks/", headers=stranger),
         client.post(f"/sources/{source_id}/chunks/", headers=stranger),
+        client.get(f"/sources/{source_id}/segments/", headers=stranger),
         client.delete(f"/sources/{source_id}", headers=stranger),
     ]
     assert [response.status_code for response in blocked] == [404] * len(blocked)

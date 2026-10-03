@@ -3,7 +3,12 @@
 Run from the backend folder:  python -m pytest
 """
 
-from app.services.chunking import HEADING_SEPARATOR, build_chunks
+from app.services.chunking import (
+    HEADING_SEPARATOR,
+    MAX_CHUNK_CHARS,
+    build_chunks,
+    build_time_chunks,
+)
 from app.services.quality_check import assess_extraction_quality
 from app.services.text_cleaning import clean_extracted_text
 
@@ -44,20 +49,24 @@ REVERSED = "نیا نتم زا کی هوزج تسا هک رد نآ ره هلمج
 
 
 def test_good_text_is_ready():
-    assert assess_extraction_quality([GOOD, GOOD]) == "READY"
+    assert assess_extraction_quality([GOOD, GOOD]) == ("READY", None)
 
 
 def test_reversed_text_needs_review():
-    assert assess_extraction_quality([REVERSED, REVERSED]) == "NEEDS_REVIEW"
+    assert assess_extraction_quality([REVERSED, REVERSED]) == (
+        "NEEDS_REVIEW", "REVERSED_TEXT"
+    )
 
 
 def test_empty_pages_need_review():
-    assert assess_extraction_quality(["", ""]) == "NEEDS_REVIEW"
-    assert assess_extraction_quality([]) == "NEEDS_REVIEW"
+    assert assess_extraction_quality(["", ""]) == ("NEEDS_REVIEW", "NO_TEXT")
+    assert assess_extraction_quality([]) == ("NEEDS_REVIEW", "NO_TEXT")
 
 
 def test_english_text_is_ready():
-    assert assess_extraction_quality(["A page of plain English text."]) == "READY"
+    assert assess_extraction_quality(["A page of plain English text."]) == (
+        "READY", None
+    )
 
 
 # --- chunking --------------------------------------------------------------
@@ -112,3 +121,24 @@ def test_long_section_is_split():
 
 def test_pages_without_text_give_no_chunks():
     assert build_chunks([(1, ""), (2, "")]) == []
+
+
+def test_time_chunks_keep_their_time_span():
+    segments = [(i * 4.0, i * 4.0 + 4.0, f"spoken words number {i} " * 6) for i in range(40)]
+    chunks = build_time_chunks(segments + [(160.0, 161.0, "   ")])
+
+    assert len(chunks) > 1
+    assert chunks[0].start_seconds == 0.0
+    assert chunks[-1].end_seconds == 160.0
+    assert all(c.page_start is None and c.heading is None for c in chunks)
+    assert all(len(c.text) <= MAX_CHUNK_CHARS for c in chunks)
+    # Chunks follow each other in time without gaps or overlap.
+    for before, after in zip(chunks, chunks[1:]):
+        assert before.end_seconds == after.start_seconds
+    assert " ".join(c.text for c in chunks) == " ".join(
+        " ".join(text.split()) for _, _, text in segments
+    )
+
+
+def test_no_segments_give_no_time_chunks():
+    assert build_time_chunks([]) == []
