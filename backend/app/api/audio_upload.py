@@ -1,3 +1,4 @@
+import logging
 import math
 import os
 import uuid
@@ -25,6 +26,8 @@ router = APIRouter(
 )
 
 # AUDIO_UPLOAD_V1
+
+logger = logging.getLogger(__name__)
 
 AUDIO_DIR = os.path.join(UPLOAD_ROOT, "audio")
 os.makedirs(AUDIO_DIR, exist_ok=True)
@@ -119,6 +122,8 @@ def process_audio_source(source_id: int) -> None:
             code = transcription.TRANSCRIPTION_FAILED
             if isinstance(error, transcription.TranscriptionError):
                 code = error.code
+            else:
+                logger.exception("Processing of audio source %s failed", source_id)
 
             source = db.query(SourceDB).filter(
                 SourceDB.id == source_id

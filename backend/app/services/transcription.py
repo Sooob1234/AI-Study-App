@@ -9,11 +9,14 @@ This belongs to the source-processing layer: it only writes down what was
 said. It does not summarise or interpret.
 """
 
+import logging
 import os
 import threading
 from dataclasses import dataclass
 
 # TRANSCRIPTION_V1
+
+logger = logging.getLogger(__name__)
 
 # Which Whisper model to use. Larger models are more accurate and slower:
 # tiny, base, small, medium, large-v3.
@@ -105,6 +108,7 @@ def transcribe(path: str) -> Transcript:
     try:
         model = _get_model()
     except Exception:
+        logger.exception("The speech-recognition model could not be loaded")
         raise TranscriptionError(TRANSCRIBER_UNAVAILABLE)
 
     try:
@@ -116,6 +120,7 @@ def transcribe(path: str) -> Transcript:
                 for piece in pieces
             ]
     except Exception:
+        logger.exception("Transcription of %s failed", path)
         raise TranscriptionError(TRANSCRIPTION_FAILED)
 
     return Transcript(language=info.language, segments=segments)

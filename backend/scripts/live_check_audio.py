@@ -58,6 +58,17 @@ def main() -> int:
         path = os.path.join(folder, f"{name}.wav")
         speak(text, voice, path)
 
+        try:
+            # Called directly first, so that a failure shows its real cause.
+            transcription.transcribe(path)
+        except Exception:
+            import traceback
+
+            cause = traceback.format_exc()
+            if sys.exc_info()[1].__context__ is not None:
+                cause = "".join(traceback.format_exception(sys.exc_info()[1].__context__))
+            notice(f"audio {name} cause", cause[-900:])
+
         started = time.time()
         with open(path, "rb") as handle:
             created = client.post(
