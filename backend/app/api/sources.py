@@ -1,73 +1,22 @@
 import os
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import delete, insert, select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user, get_own_project, get_own_source
-from app.core.config import UPLOAD_ROOT
+from app.api.deps import get_own_project, get_own_source
+from app.core.config import UPLOAD_ROOT, to_disk_path
 from app.core.database import get_db
 from app.models.project import ProjectDB
 from app.models.source import (
-    SourceCreate,
     SourceDB,
     SourceResponse,
     project_sources,
 )
-from app.models.user import UserDB
 
 router = APIRouter(
     tags=["Sources"]
 )
-
-
-@router.post(
-    "/projects/{project_id}/sources/",
-    response_model=SourceResponse
-)
-def create_source(
-    data: SourceCreate,
-    project: ProjectDB = Depends(get_own_project),
-    user: UserDB = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    if data.source_type.value == "PDF":
-        raise HTTPException(
-            status_code=400,
-            detail="PDF sources are added with the PDF upload endpoint"
-        )
-
-    if data.source_type.value == "YOUTUBE":
-        raise HTTPException(
-            status_code=400,
-            detail="YouTube sources are added with the YouTube endpoint"
-        )
-
-    source = SourceDB(
-        user_id=user.id,
-        title=data.title,
-        source_type=data.source_type.value,
-        url=data.url,
-        file_path=None,
-        duration=data.duration,
-        page_count=data.page_count,
-        status="PROCESSING",
-    )
-
-    db.add(source)
-    db.flush()
-
-    db.execute(
-        insert(project_sources).values(
-            project_id=project.id,
-            source_id=source.id
-        )
-    )
-
-    db.commit()
-    db.refresh(source)
-
-    return source
 
 
 @router.get(
@@ -108,7 +57,7 @@ def _remove_stored_file(file_path: str | None) -> bool:
         return False
 
     root = os.path.realpath(UPLOAD_ROOT)
-    target = os.path.realpath(file_path)
+    target = os.path.realpath(to_disk_path(file_path))
 
     # Never touch anything outside the uploads folder.
     if os.path.commonpath([root, target]) != root:

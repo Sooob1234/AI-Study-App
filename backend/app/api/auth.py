@@ -22,6 +22,24 @@ router = APIRouter(
 )
 
 
+def adopt_ownerless_rows(db: Session, user_id: int) -> None:
+    """Give projects and sources that have no owner to a user.
+
+    Rows made before accounts existed have no owner. They go to the first
+    account, so that earlier work is not lost. Does not commit.
+    """
+    db.execute(
+        update(ProjectDB)
+        .where(ProjectDB.user_id.is_(None))
+        .values(user_id=user_id)
+    )
+    db.execute(
+        update(SourceDB)
+        .where(SourceDB.user_id.is_(None))
+        .values(user_id=user_id)
+    )
+
+
 @router.post("/register", response_model=UserResponse)
 def register(
     data: UserCreate,
@@ -55,18 +73,7 @@ def register(
         )
 
     if is_first_user:
-        # Projects and sources made before accounts existed have no owner.
-        # They go to the first account, so that earlier work is not lost.
-        db.execute(
-            update(ProjectDB)
-            .where(ProjectDB.user_id.is_(None))
-            .values(user_id=user.id)
-        )
-        db.execute(
-            update(SourceDB)
-            .where(SourceDB.user_id.is_(None))
-            .values(user_id=user.id)
-        )
+        adopt_ownerless_rows(db, user.id)
 
     db.commit()
     db.refresh(user)
@@ -80,9 +87,13 @@ def login(
     db: Session = Depends(get_db)
 ):
     """Log in. The "username" field takes the email address."""
-    user = db.query(UserDB).filter(
-        UserDB.email == form.username.strip().lower()
-    ).first()
+    email = form.username.strip().lower()
+    user = None
+
+    # The database cannot even be asked about a text with a NUL character,
+    # and no account has one in its email.
+    if "\x00" not in email:
+        user = db.query(UserDB).filter(UserDB.email == email).first()
 
     password_hash = user.password_hash if user is not None else DUMMY_HASH
     password_ok = verify_password(form.password, password_hash)

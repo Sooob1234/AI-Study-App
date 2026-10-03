@@ -10,14 +10,17 @@ import re
 
 # QUALITY_CHECK_V1
 
-# Very common Persian words. In healthy text they appear often; in broken
-# text their mirror images ("زا" for "از") appear instead.
+# Very common Persian words whose mirror image is not a word. In healthy
+# text they appear often; in broken text their mirror images ("زا" for "از")
+# appear instead. Words such as "در" are left out on purpose, because their
+# mirror image ("رد") is a real word.
 _COMMON_WORDS = frozenset({
-    "از", "به", "که", "در", "را", "با", "این", "است", "برای", "آن",
-    "یا", "هر", "باید", "شود", "کند",
+    "از", "به", "که", "را", "با", "این", "است", "برای", "آن",
+    "باید", "کند", "شده", "بود", "خود", "دارد",
 })
 
-_PERSIAN_WORD = re.compile(r"[؀-ۿ]+")
+# A word may contain the half-space (zero-width non-joiner), as in "می‌شود".
+_PERSIAN_WORD = re.compile(r"[\u0600-\u06FF\u200c]+")
 _LETTER = re.compile(r"[^\W\d_]")
 
 # A page with fewer letters than this counts as having no text.

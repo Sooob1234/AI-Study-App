@@ -8,7 +8,14 @@ load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-engine = create_engine(DATABASE_URL)
+if not DATABASE_URL:
+    raise RuntimeError(
+        "DATABASE_URL is not set. Copy backend/.env.example to backend/.env."
+    )
+
+# pool_pre_ping: a connection that the database has closed in the meantime
+# (for example after a database restart) is replaced instead of failing.
+engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 
 SessionLocal = sessionmaker(
     autocommit=False,

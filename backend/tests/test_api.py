@@ -19,6 +19,21 @@ def _project(client, headers, title="Physics"):
     return response.json()["id"]
 
 
+def _disk_path(source_id):
+    """Where the stored file of a source is on disk (read from the database)."""
+    from app.core.config import to_disk_path
+    from app.core.database import SessionLocal
+    from app.models.source import SourceDB
+
+    db = SessionLocal()
+    try:
+        stored = db.query(SourceDB.file_path).filter(SourceDB.id == source_id).scalar()
+    finally:
+        db.close()
+
+    return to_disk_path(stored)
+
+
 def _upload(client, headers, project_id, data=TEXT_PDF, name="notes.pdf"):
     return client.post(
         f"/projects/{project_id}/sources/pdf",
@@ -74,7 +89,6 @@ def test_everything_needs_a_login(client):
         ("post", "/projects/"),
         ("get", "/projects/1"),
         ("get", "/projects/1/sources/"),
-        ("post", "/projects/1/sources/"),
         ("post", "/projects/1/sources/pdf"),
         ("post", "/projects/1/sources/youtube"),
         ("get", "/sources/1"),
@@ -119,7 +133,8 @@ def test_pdf_upload_extracts_pages_and_chunks(client, new_user):
     assert source["status"] == "READY"
     assert source["status_detail"] is None
     assert source["page_count"] == 2
-    assert os.path.isfile(source["file_path"])
+    assert "file_path" not in source
+    assert os.path.isfile(_disk_path(source["id"]))
 
     assert client.get(f"/sources/{source['id']}", headers=headers).json() == source
 
@@ -171,35 +186,18 @@ def test_bad_uploads_are_rejected_and_leave_no_file(client, new_user):
     assert len(long_name.json()["title"]) == 255
 
 
-def test_manual_source_rules(client, new_user):
-    headers, _ = new_user()
-    project_id = _project(client, headers)
-    url = f"/projects/{project_id}/sources/"
-
-    def create(**body):
-        return client.post(url, json=body, headers=headers)
-
-    assert create(title="v", source_type="PDF").status_code == 400
-    assert create(title="v", source_type="YOUTUBE").status_code == 400
-    assert create(title="v", source_type="WORD").status_code == 422
-    assert create(title="v", source_type="AUDIO", duration=-1).status_code == 422
-
-    made = create(title="v", source_type="AUDIO", file_path="/etc/passwd")
-    assert made.status_code == 200
-    assert made.json()["file_path"] is None
-
-
 # --- deleting -----------------------------------------------------------------
 
 def test_delete_source_removes_everything(client, new_user):
     headers, _ = new_user()
     project_id = _project(client, headers)
     source = _upload(client, headers, project_id).json()
+    disk_path = _disk_path(source["id"])
 
     deleted = client.delete(f"/sources/{source['id']}", headers=headers)
     assert deleted.status_code == 200
     assert deleted.json()["file_removed"] is True
-    assert not os.path.exists(source["file_path"])
+    assert not os.path.exists(disk_path)
 
     assert client.get(f"/sources/{source['id']}", headers=headers).status_code == 404
     assert client.delete(f"/sources/{source['id']}", headers=headers).status_code == 404
@@ -222,11 +220,6 @@ def test_users_cannot_reach_each_others_data(client, new_user):
     blocked = [
         client.get(f"/projects/{project_id}", headers=stranger),
         client.get(f"/projects/{project_id}/sources/", headers=stranger),
-        client.post(
-            f"/projects/{project_id}/sources/",
-            json={"title": "v", "source_type": "AUDIO"},
-            headers=stranger,
-        ),
         _upload(client, stranger, project_id),
         client.get(f"/sources/{source_id}", headers=stranger),
         client.get(f"/sources/{source_id}/pages/", headers=stranger),
@@ -239,7 +232,7 @@ def test_users_cannot_reach_each_others_data(client, new_user):
 
     # Nothing was changed by the attempts.
     assert client.get(f"/sources/{source_id}", headers=owner).status_code == 200
-    assert os.path.isfile(source["file_path"])
+    assert os.path.isfile(_disk_path(source_id))
     listed = client.get(f"/projects/{project_id}/sources/", headers=owner).json()
     assert [item["id"] for item in listed] == [source_id]
 
@@ -362,11 +355,7 @@ def test_video_cut_off_by_a_restart_is_marked_failed(client, new_user, monkeypat
     headers, _ = new_user()
     project_id = _project(client, headers)
     video = _add_video(client, headers, project_id).json()
-    audio = client.post(
-        f"/projects/{project_id}/sources/",
-        json={"title": "v", "source_type": "AUDIO"},
-        headers=headers,
-    ).json()
+    pdf = _upload(client, headers, project_id).json()
 
     # Put the video back to the state a restart would leave it in.
     db = SessionLocal()
@@ -380,5 +369,138 @@ def test_video_cut_off_by_a_restart_is_marked_failed(client, new_user, monkeypat
 
     after = client.get(f"/sources/{video['id']}", headers=headers).json()
     assert (after["status"], after["status_detail"]) == ("FAILED", "INTERRUPTED")
-    untouched = client.get(f"/sources/{audio['id']}", headers=headers).json()
-    assert untouched["status"] == "PROCESSING"
+    untouched = client.get(f"/sources/{pdf['id']}", headers=headers).json()
+    assert untouched["status"] == "READY"
+
+def test_tokens_that_are_expired_or_wrongly_signed_are_refused(client, new_user):
+    from datetime import datetime, timedelta, timezone
+
+    import jwt
+
+    from app.core.config import SECRET_KEY
+
+    _, user = new_user()
+    now = datetime.now(timezone.utc)
+
+    def token(secret=SECRET_KEY, algorithm="HS256", **changes):
+        payload = {"sub": str(user["id"]), "exp": now + timedelta(hours=1)}
+        payload.update(changes)
+        return jwt.encode(payload, secret, algorithm=algorithm)
+
+    def status(value):
+        return client.get(
+            "/auth/me", headers={"Authorization": f"Bearer {value}"}
+        ).status_code
+
+    assert status(token()) == 200
+    assert status(token(exp=now - timedelta(minutes=1))) == 401
+    assert status(token(secret="another-key-of-sufficient-length-000")) == 401
+    assert status(token(sub="999999999")) == 401
+    assert status(token(sub="not-a-number")) == 401
+    # A token with no signature at all.
+    assert status(jwt.encode({"sub": str(user["id"])}, None, algorithm="none")) == 401
+
+
+def test_strange_input_never_causes_an_internal_error(client, new_user):
+    headers, user = new_user()
+    huge = "99999999999999999999"
+
+    assert client.post(
+        "/projects/", json={"title": "a\u0000b"}, headers=headers
+    ).status_code == 422
+    assert client.post(
+        "/auth/register",
+        json={"name": "a\u0000b", "email": "nul@example.com", "password": "long-enough"},
+    ).status_code == 422
+    assert client.post(
+        "/auth/login", data={"username": "a\x00b@example.com", "password": "x" * 10}
+    ).status_code == 401
+
+    for path in (f"/projects/{huge}", f"/sources/{huge}", f"/sources/{huge}/pages/", "/projects/0"):
+        assert client.get(path, headers=headers).status_code == 422, path
+    assert client.delete(f"/sources/{huge}", headers=headers).status_code == 422
+
+
+def test_oversized_upload_is_refused_before_it_is_stored(client, new_user):
+    from app.api.pdf_upload import MAX_PDF_SIZE_BYTES
+
+    headers, _ = new_user()
+    project_id = _project(client, headers)
+    folder = os.path.join(os.environ["UPLOAD_ROOT"], "pdfs")
+    before = set(os.listdir(folder))
+
+    response = _upload(
+        client, headers, project_id, b"%PDF-1.4\n" + b"0" * (MAX_PDF_SIZE_BYTES + 2_000_000)
+    )
+
+    assert response.status_code == 413
+    assert set(os.listdir(folder)) == before
+
+
+def test_password_protected_pdf_gets_a_clear_message(client, new_user):
+    import io
+
+    from pypdf import PdfReader, PdfWriter
+
+    writer = PdfWriter()
+    for page in PdfReader(io.BytesIO(TEXT_PDF)).pages:
+        writer.add_page(page)
+    writer.encrypt("secret")
+    buffer = io.BytesIO()
+    writer.write(buffer)
+
+    headers, _ = new_user()
+    response = _upload(client, headers, _project(client, headers), buffer.getvalue())
+
+    assert response.status_code == 400
+    assert "Password-protected" in response.json()["detail"]
+
+
+def test_stored_file_outside_the_uploads_folder_is_never_removed(app, tmp_path):
+    from app.api.sources import _remove_stored_file
+
+    outside = tmp_path / "keep-me.txt"
+    outside.write_text("important")
+
+    inside = os.path.join(os.environ["UPLOAD_ROOT"], "pdfs", "remove-me.pdf")
+    with open(inside, "w") as handle:
+        handle.write("x")
+
+    assert _remove_stored_file(str(outside)) is False
+    assert _remove_stored_file(os.path.join(os.environ["UPLOAD_ROOT"], "..", outside.name)) is False
+    assert _remove_stored_file(None) is False
+    assert outside.read_text() == "important"
+
+    assert _remove_stored_file(inside) is True
+    assert not os.path.exists(inside)
+
+
+def test_first_account_takes_over_rows_without_an_owner(client, new_user):
+    from app.api.auth import adopt_ownerless_rows
+    from app.core.database import SessionLocal
+    from app.models.project import ProjectDB
+    from app.models.source import SourceDB
+
+    headers, user = new_user()
+    others, _ = new_user()
+    other_project = _project(client, others, "Not mine")
+
+    db = SessionLocal()
+    try:
+        project = ProjectDB(title="From before accounts")
+        source = SourceDB(title="old", source_type="PDF", status="READY")
+        db.add_all([project, source])
+        db.commit()
+
+        assert client.get(f"/projects/{project.id}", headers=headers).status_code == 404
+
+        adopt_ownerless_rows(db, user["id"])
+        db.commit()
+
+        assert client.get(f"/projects/{project.id}", headers=headers).status_code == 200
+        assert client.get(f"/sources/{source.id}", headers=headers).status_code == 200
+        # Rows that already have an owner are left alone.
+        assert client.get(f"/projects/{other_project}", headers=headers).status_code == 404
+        assert client.get(f"/projects/{other_project}", headers=others).status_code == 200
+    finally:
+        db.close()

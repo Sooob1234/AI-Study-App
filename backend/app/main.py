@@ -1,5 +1,8 @@
 from fastapi import FastAPI
 
+from app.api.pdf_upload import MAX_PDF_SIZE_BYTES, MAX_PDF_SIZE_MB
+from app.core.body_limit import BodySizeLimitMiddleware
+
 from app.api.auth import router as auth_router
 from app.api.projects import router as projects_router
 from app.api.sources import router as sources_router
@@ -33,6 +36,14 @@ app = FastAPI(
     version="0.1.0"
 )
 
+
+# Nothing larger than the biggest allowed PDF (plus a little room for the
+# form around it) is read from the network at all.
+app.add_middleware(
+    BodySizeLimitMiddleware,
+    max_bytes=MAX_PDF_SIZE_BYTES + 1024 * 1024,
+    detail=f"Request is larger than {MAX_PDF_SIZE_MB} MB",
+)
 
 app.include_router(auth_router)
 app.include_router(projects_router)
