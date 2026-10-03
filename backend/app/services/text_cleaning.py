@@ -21,6 +21,8 @@ _CHAR_REPLACEMENTS = {
     "\uFEFF": "",        # byte order mark
 }
 
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
 _BRACKET_PAIRS = [("(", ")"), ("\u00AB", "\u00BB"), ("[", "]")]
 
 # A number at the start of a line followed by a single bracket, e.g. "1)"
@@ -56,7 +58,17 @@ def _fix_mirrored_brackets(text: str) -> str:
         swapped = _unbalanced_count(sample, closer, opener)
 
         if swapped < as_is:
-            text = text.translate({ord(opener): closer, ord(closer): opener})
+            # Swap everywhere except inside list markers such as "1)",
+            # which must stay as they are.
+            table = {ord(opener): closer, ord(closer): opener}
+            parts = []
+            position = 0
+            for marker in _LIST_MARKER.finditer(text):
+                parts.append(text[position:marker.start()].translate(table))
+                parts.append(marker.group())
+                position = marker.end()
+            parts.append(text[position:].translate(table))
+            text = "".join(parts)
 
     return text
 
@@ -68,6 +80,10 @@ def clean_extracted_text(text: str | None) -> str:
 
     # Presentation-form letters -> standard letters
     text = unicodedata.normalize("NFKC", text)
+
+    # Invisible control characters (the database rejects some of them);
+    # line breaks and tabs are kept.
+    text = _CONTROL_CHARS.sub("", text)
 
     for old, new in _CHAR_REPLACEMENTS.items():
         text = text.replace(old, new)

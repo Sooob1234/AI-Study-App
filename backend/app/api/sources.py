@@ -35,11 +35,17 @@ def create_source(
             detail="Project not found"
         )
 
+    if data.source_type.value == "PDF":
+        raise HTTPException(
+            status_code=400,
+            detail="PDF sources are added with the PDF upload endpoint"
+        )
+
     source = SourceDB(
         title=data.title,
         source_type=data.source_type.value,
         url=data.url,
-        file_path=data.file_path,
+        file_path=None,
         duration=data.duration,
         page_count=data.page_count,
         status="PROCESSING",

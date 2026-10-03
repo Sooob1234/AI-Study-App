@@ -1,7 +1,7 @@
 from datetime import datetime
 from enum import Enum
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Table, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -85,12 +85,22 @@ class SourceDB(Base):
 
 
 class SourceCreate(BaseModel):
-    title: str
+    # INPUT_VALIDATION_V1
+    # file_path is not accepted from outside: only the server decides
+    # where an uploaded file is stored.
+    title: str = Field(max_length=255)
     source_type: SourceType
     url: str | None = None
-    file_path: str | None = None
-    duration: int | None = None
-    page_count: int | None = None
+    duration: int | None = Field(default=None, ge=0)
+    page_count: int | None = Field(default=None, ge=0)
+
+    @field_validator("title")
+    @classmethod
+    def title_not_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Title must not be empty")
+        return value
 
 
 class SourceResponse(BaseModel):
