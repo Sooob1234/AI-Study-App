@@ -1,6 +1,7 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
+from app.api.deps import get_own_source
 from app.core.database import get_db
 from app.models.source import SourceDB
 from app.models.source_page import SourcePageDB
@@ -12,21 +13,11 @@ router = APIRouter(
 
 @router.get("/sources/{source_id}/pages/")
 def get_source_pages(
-    source_id: int,
+    source: SourceDB = Depends(get_own_source),
     db: Session = Depends(get_db)
 ):
-    source = db.query(SourceDB).filter(
-        SourceDB.id == source_id
-    ).first()
-
-    if source is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Source not found"
-        )
-
     pages = db.query(SourcePageDB).filter(
-        SourcePageDB.source_id == source_id
+        SourcePageDB.source_id == source.id
     ).order_by(
         SourcePageDB.page_number
     ).all()

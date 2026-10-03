@@ -5,7 +5,13 @@ from alembic import context
 from app.core.database import Base, engine
 
 # Importing the models registers every table on Base.metadata.
-from app.models import project, source, source_chunk, source_page  # noqa: F401
+from app.models import (  # noqa: F401
+    project,
+    source,
+    source_chunk,
+    source_page,
+    user,
+)
 
 target_metadata = Base.metadata
 
