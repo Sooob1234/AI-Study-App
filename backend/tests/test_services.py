@@ -229,8 +229,10 @@ def _run_body_limit(headers, body_parts):
     async def send(message):
         sent.append(message)
 
-    middleware = BodySizeLimitMiddleware(inner, max_bytes=10, detail="too big")
-    asyncio.run(middleware({"type": "http", "headers": headers}, receive, send))
+    middleware = BodySizeLimitMiddleware(inner, limit_for=lambda path: 10)
+    asyncio.run(
+        middleware({"type": "http", "path": "/", "headers": headers}, receive, send)
+    )
 
     return sent[0]["status"], seen
 
@@ -249,3 +251,17 @@ def test_body_limit_stops_reading_an_undeclared_body():
 def test_body_limit_lets_a_small_body_through():
     status, seen = _run_body_limit([(b"content-length", b"10")], [b"12345", b"12345"])
     assert (status, seen) == (200, [5, 5])
+
+
+def test_each_path_has_its_own_size_limit():
+    from app.core.limits import (
+        MAX_AUDIO_SIZE_BYTES,
+        MAX_ORDINARY_REQUEST_BYTES,
+        MAX_PDF_SIZE_BYTES,
+        request_limit_for,
+    )
+
+    assert MAX_PDF_SIZE_BYTES < request_limit_for("/projects/3/sources/pdf") < MAX_PDF_SIZE_BYTES * 1.1
+    assert MAX_AUDIO_SIZE_BYTES < request_limit_for("/projects/3/sources/audio/") < MAX_AUDIO_SIZE_BYTES * 1.1
+    for path in ("/projects/", "/auth/register", "/sources/3/chunks/", "/pdf", ""):
+        assert request_limit_for(path) == MAX_ORDINARY_REQUEST_BYTES, path

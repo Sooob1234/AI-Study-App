@@ -1,14 +1,20 @@
-name: Tests
+name: Live checks
 
+# Checks that need the real outside world (the speech-recognition model,
+# YouTube). They run on demand and on the branches that work on those parts.
 on:
-  push:
   workflow_dispatch:
+  push:
+    branches:
+      - audio-source
+      - youtube-source
+      - "live/**"
 
 permissions:
   contents: read
 
 jobs:
-  tests:
+  audio:
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -16,7 +22,7 @@ jobs:
         env:
           POSTGRES_USER: ai_study
           POSTGRES_PASSWORD: ai_study_password
-          POSTGRES_DB: ai_study_test
+          POSTGRES_DB: ai_study_live
         ports:
           - 5433:5432
         options: >-
@@ -27,13 +33,14 @@ jobs:
     defaults:
       run:
         working-directory: backend
+    env:
+      DATABASE_URL: postgresql+psycopg2://ai_study:ai_study_password@localhost:5433/ai_study_live
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+      - run: sudo apt-get update && sudo apt-get install -y espeak-ng
       - run: pip install -r requirements.txt -r requirements-dev.txt -r requirements-audio.txt
-      - name: Run all checks
-        env:
-          TEST_DATABASE_URL: postgresql+psycopg2://ai_study:ai_study_password@localhost:5433/ai_study_test
-        run: python -m pytest -q
+      - name: Real speech-to-text through the app
+        run: python -m scripts.live_check_audio

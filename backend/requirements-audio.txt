@@ -1,0 +1,3 @@
+# Optional: needed only for audio sources (speech to text on this computer).
+# Install with:  pip install -r requirements-audio.txt
+faster-whisper==1.2.1

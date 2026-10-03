@@ -90,6 +90,8 @@ def test_everything_needs_a_login(client):
         ("get", "/projects/1"),
         ("get", "/projects/1/sources/"),
         ("post", "/projects/1/sources/pdf"),
+        ("post", "/projects/1/sources/audio"),
+        ("post", "/sources/1/retry"),
         ("get", "/sources/1"),
         ("delete", "/sources/1"),
         ("get", "/sources/1/pages/"),
@@ -225,6 +227,12 @@ def test_users_cannot_reach_each_others_data(client, new_user):
         client.get(f"/sources/{source_id}/chunks/", headers=stranger),
         client.post(f"/sources/{source_id}/chunks/", headers=stranger),
         client.get(f"/sources/{source_id}/segments/", headers=stranger),
+        client.post(f"/sources/{source_id}/retry", headers=stranger),
+        client.post(
+            f"/projects/{project_id}/sources/audio",
+            files={"file": ("a.wav", b"x", "audio/wav")},
+            headers=stranger,
+        ),
         client.delete(f"/sources/{source_id}", headers=stranger),
     ]
     assert [response.status_code for response in blocked] == [404] * len(blocked)
@@ -288,7 +296,7 @@ def test_strange_input_never_causes_an_internal_error(client, new_user):
 
 
 def test_oversized_upload_is_refused_before_it_is_stored(client, new_user):
-    from app.api.pdf_upload import MAX_PDF_SIZE_BYTES
+    from app.core.limits import MAX_PDF_SIZE_BYTES
 
     headers, _ = new_user()
     project_id = _project(client, headers)
@@ -370,3 +378,202 @@ def test_first_account_takes_over_rows_without_an_owner(client, new_user):
         assert client.get(f"/projects/{other_project}", headers=others).status_code == 200
     finally:
         db.close()
+
+
+# --- audio --------------------------------------------------------------------
+# The speech recogniser is replaced by a stand-in here; reading the audio
+# file itself is real. These checks need the optional audio packages.
+
+def _wav(seconds=2.0):
+    import io
+    import math
+    import struct
+    import wave
+
+    rate = 8000
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(rate)
+        out.writeframes(b"".join(
+            struct.pack("<h", int(8000 * math.sin(2 * math.pi * 440 * i / rate)))
+            for i in range(int(rate * seconds))
+        ))
+    return buffer.getvalue()
+
+
+def _audio_ready():
+    import pytest
+
+    from app.services import transcription
+
+    if not transcription.is_available():
+        pytest.skip("the optional audio packages are not installed")
+
+
+def _fake_transcriber(monkeypatch, result):
+    from app.services import transcription
+
+    calls = []
+
+    def transcribe(path):
+        calls.append(path)
+        assert os.path.isfile(path)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(transcription, "transcribe", transcribe)
+    return calls
+
+
+def _upload_audio(client, headers, project_id, data=None, name="lecture.wav"):
+    return client.post(
+        f"/projects/{project_id}/sources/audio",
+        files={"file": (name, _wav() if data is None else data, "audio/wav")},
+        headers=headers,
+    )
+
+
+def test_audio_source_is_transcribed(client, new_user, monkeypatch):
+    from app.services.transcription import Transcript
+
+    _audio_ready()
+    segments = [
+        (i * 5.0, i * 5.0 + 5.0, f"a spoken sentence number {i} of the class " * 3)
+        for i in range(40)
+    ]
+    calls = _fake_transcriber(monkeypatch, Transcript("en", segments))
+
+    headers, _ = new_user()
+    project_id = _project(client, headers)
+
+    response = _upload_audio(client, headers, project_id)
+    assert response.status_code == 200, response.text
+    created = response.json()
+    # The answer is sent before the transcription starts.
+    assert created["status"] == "PROCESSING"
+    assert created["source_type"] == "AUDIO"
+    assert created["duration"] == 2
+    assert created["title"] == "lecture.wav"
+    assert len(calls) == 1
+
+    source = client.get(f"/sources/{created['id']}", headers=headers).json()
+    assert (source["status"], source["status_detail"]) == ("READY", None)
+
+    stored = client.get(f"/sources/{created['id']}/segments/", headers=headers).json()
+    assert len(stored) == 40
+
+    chunks = client.get(f"/sources/{created['id']}/chunks/", headers=headers).json()
+    assert len(chunks) > 1
+    assert (chunks[0]["start_seconds"], chunks[-1]["end_seconds"]) == (0.0, 200.0)
+    assert chunks[0]["page_start"] is None
+
+    disk_path = _disk_path(created["id"])
+    assert os.path.isfile(disk_path)
+    assert client.delete(f"/sources/{created['id']}", headers=headers).json()["file_removed"] is True
+    assert not os.path.exists(disk_path)
+
+
+def test_audio_failures_are_reported_and_can_be_retried(client, new_user, monkeypatch):
+    from app.services.transcription import Transcript, TranscriptionError
+
+    _audio_ready()
+    headers, _ = new_user()
+    project_id = _project(client, headers)
+
+    cases = [
+        (TranscriptionError("TRANSCRIBER_UNAVAILABLE"), "TRANSCRIBER_UNAVAILABLE"),
+        (RuntimeError("anything unexpected"), "TRANSCRIPTION_FAILED"),
+        (Transcript("en", [(0.0, 2.0, "  ")]), "NO_SPEECH"),
+        (Transcript("en", []), "NO_SPEECH"),
+    ]
+
+    for result, code in cases:
+        _fake_transcriber(monkeypatch, result)
+        created = _upload_audio(client, headers, project_id).json()
+        source = client.get(f"/sources/{created['id']}", headers=headers).json()
+        assert (source["status"], source["status_detail"]) == ("FAILED", code)
+
+    # The file was kept, so the same source can be processed again.
+    text = "now the recogniser works and the lecture is written down " * 3
+    _fake_transcriber(monkeypatch, Transcript("en", [(0.0, 2.0, text)]))
+
+    retried = client.post(f"/sources/{created['id']}/retry", headers=headers)
+    assert retried.status_code == 200
+    assert retried.json()["status"] == "PROCESSING"
+
+    source = client.get(f"/sources/{created['id']}", headers=headers).json()
+    assert (source["status"], source["status_detail"]) == ("READY", None)
+
+    # Only a failed audio source can be retried.
+    assert client.post(f"/sources/{created['id']}/retry", headers=headers).status_code == 400
+    pdf = _upload(client, headers, project_id).json()
+    assert client.post(f"/sources/{pdf['id']}/retry", headers=headers).status_code == 400
+
+
+def test_bad_audio_uploads_are_rejected_and_leave_no_file(client, new_user, monkeypatch):
+    from app.services.transcription import Transcript
+
+    _audio_ready()
+    calls = _fake_transcriber(monkeypatch, Transcript("en", []))
+    headers, _ = new_user()
+    project_id = _project(client, headers)
+    folder = os.path.join(os.environ["UPLOAD_ROOT"], "audio")
+    before = set(os.listdir(folder))
+
+    assert _upload_audio(client, headers, project_id, b"not audio at all").status_code == 400
+    assert _upload_audio(client, headers, project_id, b"").status_code == 400
+    assert _upload_audio(client, headers, project_id, TEXT_PDF, "notes.mp3").status_code == 400
+    assert _upload_audio(client, headers, project_id, name="lecture.exe").status_code == 400
+    assert _upload_audio(client, headers, project_id, name="lecture").status_code == 400
+
+    assert set(os.listdir(folder)) == before
+    assert calls == []
+    assert client.get(f"/projects/{project_id}/sources/", headers=headers).json() == []
+
+
+def test_audio_is_refused_when_the_recogniser_is_not_installed(client, new_user, monkeypatch):
+    from app.services import transcription
+
+    monkeypatch.setattr(transcription, "is_available", lambda: False)
+    headers, _ = new_user()
+    project_id = _project(client, headers)
+
+    response = _upload_audio(client, headers, project_id, b"x")
+    assert response.status_code == 503
+    assert client.get(f"/projects/{project_id}/sources/", headers=headers).json() == []
+
+
+def test_source_cut_off_by_a_restart_is_marked_failed(client, new_user, monkeypatch):
+    from app.core.database import SessionLocal
+    from app.core.recovery import fail_interrupted_sources
+    from app.models.source import SourceDB
+    from app.services.transcription import Transcript
+
+    _audio_ready()
+    text = "the lecture is written down by the recogniser " * 3
+    _fake_transcriber(monkeypatch, Transcript("en", [(0.0, 2.0, text)]))
+    headers, _ = new_user()
+    project_id = _project(client, headers)
+    audio = _upload_audio(client, headers, project_id).json()
+    pdf = _upload(client, headers, project_id).json()
+
+    # Put the audio back to the state a restart would leave it in.
+    db = SessionLocal()
+    db.query(SourceDB).filter(SourceDB.id == audio["id"]).update(
+        {"status": "PROCESSING", "status_detail": None}
+    )
+    db.commit()
+    db.close()
+
+    assert fail_interrupted_sources() == 1
+
+    after = client.get(f"/sources/{audio['id']}", headers=headers).json()
+    assert (after["status"], after["status_detail"]) == ("FAILED", "INTERRUPTED")
+    assert client.get(f"/sources/{pdf['id']}", headers=headers).json()["status"] == "READY"
+
+    # An interrupted source can be picked up again.
+    assert client.post(f"/sources/{audio['id']}/retry", headers=headers).status_code == 200
+    assert client.get(f"/sources/{audio['id']}", headers=headers).json()["status"] == "READY"
