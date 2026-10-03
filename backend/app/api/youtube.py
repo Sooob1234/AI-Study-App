@@ -1,3 +1,4 @@
+import logging
 import math
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
@@ -23,9 +24,23 @@ router = APIRouter(
 
 MAX_TITLE_CHARS = 255
 
+logger = logging.getLogger(__name__)
+
 
 class YouTubeSourceCreate(BaseModel):
     url: str = Field(max_length=2000)
+
+
+def _fail(source_id: int, code: str) -> None:
+    db = SessionLocal()
+    try:
+        source = db.query(SourceDB).filter(SourceDB.id == source_id).first()
+        if source is not None:
+            source.status = "FAILED"
+            source.status_detail = code
+            db.commit()
+    finally:
+        db.close()
 
 
 def process_youtube_source(source_id: int, video_id: str) -> None:
@@ -34,89 +49,68 @@ def process_youtube_source(source_id: int, video_id: str) -> None:
     Runs after the request has been answered. It always ends by setting
     the source to READY, NEEDS_REVIEW or FAILED.
     """
-    db = SessionLocal()
+    # Step 1: fetch the captions. No database connection is held meanwhile.
+    try:
+        transcript = youtube.fetch_youtube(video_id)
 
+        segments = []
+        for start, end, text in transcript.segments:
+            cleaned = clean_extracted_text(text)
+            if cleaned:
+                segments.append((start, end, cleaned))
+
+        if not segments:
+            raise youtube.YouTubeError(youtube.NO_TRANSCRIPT)
+
+    except youtube.YouTubeError as error:
+        _fail(source_id, error.code)
+        return
+    except Exception:
+        logger.exception("Processing of YouTube source %s failed", source_id)
+        _fail(source_id, youtube.FETCH_FAILED)
+        return
+
+    # Step 2: store the result.
+    db = SessionLocal()
     try:
         source = db.query(SourceDB).filter(SourceDB.id == source_id).first()
         if source is None:
-            # Deleted before processing started.
+            # Deleted while it was being fetched.
             return
 
-        try:
-            transcript = youtube.fetch_youtube(video_id)
-
-            segments = []
-            for start, end, text in transcript.segments:
-                cleaned = clean_extracted_text(text)
-                if cleaned:
-                    segments.append((start, end, cleaned))
-
-            if not segments:
-                raise youtube.YouTubeError(youtube.NO_TRANSCRIPT)
-
-            db.execute(
-                delete(SourceSegmentDB).where(
-                    SourceSegmentDB.source_id == source_id
-                )
+        db.execute(
+            delete(SourceSegmentDB).where(
+                SourceSegmentDB.source_id == source_id
             )
-            for index, (start, end, text) in enumerate(segments):
-                db.add(SourceSegmentDB(
-                    source_id=source_id,
-                    segment_index=index,
-                    start_seconds=start,
-                    end_seconds=end,
-                    text=text,
-                ))
+        )
+        for index, (start, end, text) in enumerate(segments):
+            db.add(SourceSegmentDB(
+                source_id=source_id,
+                segment_index=index,
+                start_seconds=start,
+                end_seconds=end,
+                text=text,
+            ))
 
-            chunks = build_time_chunks(segments)
-            save_chunks(db, source_id, chunks)
+        chunks = build_time_chunks(segments)
+        save_chunks(db, source_id, chunks)
 
-            if transcript.title:
-                source.title = transcript.title[:MAX_TITLE_CHARS]
-            source.duration = math.ceil(max(end for _, end, _ in segments))
-            source.status, source.status_detail = assess_extraction_quality(
-                [chunk.text for chunk in chunks]
-            )
+        if transcript.title:
+            source.title = transcript.title[:MAX_TITLE_CHARS]
+        if transcript.language:
+            source.language = transcript.language[:10]
+        source.duration = math.ceil(max(end for _, end, _ in segments))
+        source.status, source.status_detail = assess_extraction_quality(
+            [chunk.text for chunk in chunks]
+        )
 
-            db.commit()
-
-        except Exception as error:
-            db.rollback()
-
-            code = youtube.FETCH_FAILED
-            if isinstance(error, youtube.YouTubeError):
-                code = error.code
-
-            source = db.query(SourceDB).filter(
-                SourceDB.id == source_id
-            ).first()
-            if source is not None:
-                source.status = "FAILED"
-                source.status_detail = code
-                db.commit()
-
-    finally:
-        db.close()
-
-
-def fail_interrupted_sources() -> int:
-    """Mark YouTube sources that were cut off by a restart as FAILED.
-
-    Processing runs inside the app itself, so a source still PROCESSING
-    when the app starts can never finish. Returns how many were marked.
-    """
-    db = SessionLocal()
-
-    try:
-        count = db.query(SourceDB).filter(
-            SourceDB.source_type == "YOUTUBE",
-            SourceDB.status == "PROCESSING"
-        ).update({
-            "status": "FAILED",
-            "status_detail": youtube.INTERRUPTED,
-        })
         db.commit()
-        return count
+
+    except Exception:
+        db.rollback()
+        logger.exception("Storing the transcript of source %s failed", source_id)
+        _fail(source_id, youtube.FETCH_FAILED)
+
     finally:
         db.close()
 

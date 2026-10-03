@@ -10,6 +10,7 @@ from app.api.deps import get_current_user, get_own_project
 from app.api.source_chunks import save_chunks
 from app.core.config import UPLOAD_ROOT, to_stored_path
 from app.core.database import get_db
+from app.core.limits import MAX_PDF_SIZE_BYTES, MAX_PDF_SIZE_MB
 from app.models.project import ProjectDB
 from app.models.user import UserDB
 from app.models.source import SourceDB, SourceResponse, project_sources
@@ -27,9 +28,6 @@ router = APIRouter(
 UPLOAD_DIR = os.path.join(UPLOAD_ROOT, "pdfs")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# Largest PDF accepted, in megabytes.
-MAX_PDF_SIZE_MB = 50
-MAX_PDF_SIZE_BYTES = MAX_PDF_SIZE_MB * 1024 * 1024
 # The title column holds at most this many characters.
 MAX_TITLE_CHARS = 255
 # A PDF with more pages than this is refused.
