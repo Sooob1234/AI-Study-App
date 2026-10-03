@@ -14,6 +14,7 @@ from app.models.project import ProjectDB
 from app.models.user import UserDB
 from app.models.source import SourceDB, SourceResponse, project_sources
 from app.models.source_page import SourcePageDB
+from app.services.chunking import build_chunks
 from app.services.quality_check import assess_extraction_quality
 from app.services.text_cleaning import clean_extracted_text
 
@@ -142,12 +143,16 @@ def upload_pdf(
         save_chunks(
             db,
             source.id,
-            [(index + 1, text) for index, text in enumerate(page_texts)]
+            build_chunks(
+                [(index + 1, text) for index, text in enumerate(page_texts)]
+            )
         )
 
         # READY only if the extracted text is usable; an empty or broken
         # text makes the source NEEDS_REVIEW instead.
-        source.status = assess_extraction_quality(page_texts)
+        source.status, source.status_detail = assess_extraction_quality(
+            page_texts
+        )
 
         db.commit()
         db.refresh(source)

@@ -87,6 +87,13 @@ class SourceDB(Base):
         nullable=False
     )
 
+    # Why the source is NEEDS_REVIEW or FAILED, as a short code such as
+    # NO_TEXT. Empty when there is nothing to report.
+    status_detail: Mapped[str | None] = mapped_column(
+        String(50),
+        nullable=True
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
         default=utc_now
@@ -121,6 +128,7 @@ class SourceResponse(BaseModel):
     duration: int | None
     page_count: int | None
     status: str
+    status_detail: str | None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)

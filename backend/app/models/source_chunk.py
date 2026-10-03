@@ -1,4 +1,4 @@
-from sqlalchemy import ForeignKey, Integer, Text
+from sqlalchemy import Float, ForeignKey, Integer, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -25,14 +25,25 @@ class SourceChunkDB(Base):
         nullable=False
     )
 
-    page_start: Mapped[int] = mapped_column(
+    # Where the chunk comes from: pages for a PDF, time for video or audio.
+    page_start: Mapped[int | None] = mapped_column(
         Integer,
-        nullable=False
+        nullable=True
     )
 
-    page_end: Mapped[int] = mapped_column(
+    page_end: Mapped[int | None] = mapped_column(
         Integer,
-        nullable=False
+        nullable=True
+    )
+
+    start_seconds: Mapped[float | None] = mapped_column(
+        Float,
+        nullable=True
+    )
+
+    end_seconds: Mapped[float | None] = mapped_column(
+        Float,
+        nullable=True
     )
 
     # The section this chunk sits under, e.g. "3- ... › 3 -2- ...".
