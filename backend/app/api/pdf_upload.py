@@ -18,15 +18,51 @@ router = APIRouter(
     tags=["PDF Upload"]
 )
 
+# UPLOAD_HARDENING_V1
+
 UPLOAD_DIR = "uploads/pdfs"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
+# Largest PDF accepted, in megabytes.
+MAX_PDF_SIZE_MB = 50
+MAX_PDF_SIZE_BYTES = MAX_PDF_SIZE_MB * 1024 * 1024
+# The title column holds at most this many characters.
+MAX_TITLE_CHARS = 255
+_READ_BLOCK_BYTES = 1024 * 1024
 
+
+def _remove_file(file_path: str) -> None:
+    if os.path.exists(file_path):
+        os.remove(file_path)
+
+
+def _store_upload(file: UploadFile, file_path: str) -> None:
+    """Write the upload to disk block by block, stopping at the size limit."""
+    size = 0
+
+    with open(file_path, "wb") as buffer:
+        while True:
+            block = file.file.read(_READ_BLOCK_BYTES)
+            if not block:
+                break
+
+            size += len(block)
+            if size > MAX_PDF_SIZE_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"PDF is larger than {MAX_PDF_SIZE_MB} MB"
+                )
+
+            buffer.write(block)
+
+
+# A plain "def" (not "async def"): FastAPI then runs this slow work in a
+# separate worker thread, so other requests are not kept waiting.
 @router.post(
     "/projects/{project_id}/sources/pdf",
     response_model=SourceResponse
 )
-async def upload_pdf(
+def upload_pdf(
     project_id: int,
     file: UploadFile = File(...),
     db: Session = Depends(get_db)
@@ -41,54 +77,57 @@ async def upload_pdf(
             detail="Project not found"
         )
 
-    if not file.filename.lower().endswith(".pdf"):
+    filename = (file.filename or "").strip()
+
+    if not filename.lower().endswith(".pdf"):
         raise HTTPException(
             status_code=400,
             detail="Only PDF files are allowed"
         )
 
-    unique_name = f"{uuid.uuid4()}.pdf"
     file_path = os.path.join(
         UPLOAD_DIR,
-        unique_name
+        f"{uuid.uuid4()}.pdf"
     )
 
-    contents = await file.read()
-
-    with open(file_path, "wb") as buffer:
-        buffer.write(contents)
-
+    # From here on, any failure must also remove the stored file.
     try:
-        reader = PdfReader(file_path)
-        page_count = len(reader.pages)
-    except Exception:
-        if os.path.exists(file_path):
-            os.remove(file_path)
+        _store_upload(file, file_path)
 
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid PDF file"
+        try:
+            reader = PdfReader(file_path)
+            encrypted = reader.is_encrypted
+            page_count = 0 if encrypted else len(reader.pages)
+        except Exception:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid PDF file"
+            )
+
+        if encrypted:
+            raise HTTPException(
+                status_code=400,
+                detail="Password-protected PDF files are not supported"
+            )
+
+        source = SourceDB(
+            title=filename[:MAX_TITLE_CHARS],
+            source_type="PDF",
+            file_path=file_path,
+            page_count=page_count,
+            status="PROCESSING"
         )
 
-    source = SourceDB(
-        title=file.filename,
-        source_type="PDF",
-        file_path=file_path,
-        page_count=page_count,
-        status="PROCESSING"
-    )
+        db.add(source)
+        db.flush()
 
-    db.add(source)
-    db.flush()
-
-    db.execute(
-        insert(project_sources).values(
-            project_id=project_id,
-            source_id=source.id
+        db.execute(
+            insert(project_sources).values(
+                project_id=project_id,
+                source_id=source.id
+            )
         )
-    )
 
-    try:
         page_texts = []
 
         for index, page in enumerate(reader.pages):
@@ -118,11 +157,14 @@ async def upload_pdf(
         db.commit()
         db.refresh(source)
 
+    except HTTPException:
+        db.rollback()
+        _remove_file(file_path)
+        raise
+
     except Exception:
         db.rollback()
-
-        if os.path.exists(file_path):
-            os.remove(file_path)
+        _remove_file(file_path)
 
         raise HTTPException(
             status_code=500,

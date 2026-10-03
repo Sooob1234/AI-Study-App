@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import DateTime, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -21,7 +21,16 @@ class ProjectDB(Base):
 
 
 class ProjectCreate(BaseModel):
-    title: str
+    # INPUT_VALIDATION_V1: a title must have 1 to 255 visible characters.
+    title: str = Field(max_length=255)
+
+    @field_validator("title")
+    @classmethod
+    def title_not_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Title must not be empty")
+        return value
 
 
 class ProjectResponse(BaseModel):
