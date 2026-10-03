@@ -57,7 +57,8 @@ upload → store file → source saved as `PROCESSING` and the request is
 answered → speech is written down in the background → clean text → timed
 segments → chunks with a time span → `READY`, or `FAILED` with a reason in
 `status_detail` (`NO_SPEECH`, `TRANSCRIPTION_FAILED`, `TRANSCRIBER_UNAVAILABLE`,
-`INTERRUPTED`). A failed audio source can be retried; its file is kept.
+`INTERRUPTED`, `SERVER_BUSY`). A failed audio source can be retried; its file
+is kept. Audio files are transcribed one at a time; at most 20 may wait.
 
 Speech is recognised on the server itself by the open Whisper model, so no
 outside service, account or payment is needed. This part is optional:
@@ -106,10 +107,6 @@ pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-The same checks run on GitHub on every push (`.github/workflows/tests.yml`).
-`live-checks.yml` runs the real speech recogniser on GitHub's servers; start it
-from the Actions tab.
-
 That runs the checks that need no database. To also run the endpoint checks,
 create an empty database whose name contains `test` and point
 `TEST_DATABASE_URL` at it (the checks erase everything in it):
@@ -117,3 +114,8 @@ create an empty database whose name contains `test` and point
 ```bash
 TEST_DATABASE_URL=postgresql+psycopg2://ai_study:ai_study_password@localhost:5433/ai_study_test python -m pytest
 ```
+
+The same checks run on GitHub on every push (`.github/workflows/tests.yml`).
+`live-checks.yml` runs the real speech recogniser on GitHub's servers; start it
+from the Actions tab.
+

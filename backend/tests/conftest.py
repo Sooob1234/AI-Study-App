@@ -26,6 +26,9 @@ if TEST_DATABASE_URL:
     os.environ["UPLOAD_ROOT"] = tempfile.mkdtemp(prefix="ai-study-uploads-")
     os.environ["JWT_SECRET"] = "test-secret-key-only-for-automated-tests"
 
+# Slow jobs are done at once in the checks, not in the background.
+os.environ["RUN_JOBS_INLINE"] = "1"
+
 
 @pytest.fixture(scope="session")
 def app():

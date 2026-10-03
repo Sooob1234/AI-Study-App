@@ -77,9 +77,14 @@ def main() -> int:
             failed = True
             continue
 
-        source = client.get(
-            f"/sources/{created.json()['id']}", headers=headers
-        ).json()
+        # The work happens in the background; wait until it is finished.
+        while True:
+            source = client.get(
+                f"/sources/{created.json()['id']}", headers=headers
+            ).json()
+            if source["status"] != "PROCESSING" or time.time() - started > 600:
+                break
+            time.sleep(1)
         segments = client.get(
             f"/sources/{source['id']}/segments/", headers=headers
         ).json()

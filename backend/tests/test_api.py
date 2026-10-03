@@ -629,3 +629,17 @@ def test_audio_language_is_passed_to_the_recogniser_and_kept_for_retry(client, n
 
     for bad in ("persian", "xx", "f a"):
         assert _upload_audio(client, headers, project_id, language=bad).status_code == 400, bad
+
+
+def test_audio_is_refused_while_the_waiting_line_is_full(client, new_user, monkeypatch):
+    from app.core import worker
+
+    _audio_ready()
+    monkeypatch.setattr(worker, "has_room", lambda: False)
+    headers, _ = new_user()
+    project_id = _project(client, headers)
+    folder = os.path.join(os.environ["UPLOAD_ROOT"], "audio")
+    before = set(os.listdir(folder))
+
+    assert _upload_audio(client, headers, project_id).status_code == 503
+    assert set(os.listdir(folder)) == before

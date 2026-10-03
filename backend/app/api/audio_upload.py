@@ -5,7 +5,6 @@ import uuid
 
 from fastapi import (
     APIRouter,
-    BackgroundTasks,
     Depends,
     File,
     Form,
@@ -17,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, get_own_project, get_own_source
 from app.api.source_chunks import save_chunks
+from app.core import worker
 from app.core.config import UPLOAD_ROOT, to_disk_path, to_stored_path
 from app.core.database import SessionLocal, get_db
 from app.core.limits import MAX_AUDIO_HOURS, MAX_AUDIO_SIZE_BYTES, MAX_AUDIO_SIZE_MB
@@ -73,76 +73,95 @@ def _store_upload(file: UploadFile, file_path: str) -> None:
             buffer.write(block)
 
 
+def _fail(source_id: int, code: str) -> None:
+    db = SessionLocal()
+    try:
+        source = db.query(SourceDB).filter(SourceDB.id == source_id).first()
+        if source is not None:
+            source.status = "FAILED"
+            source.status_detail = code
+            db.commit()
+    finally:
+        db.close()
+
+
 def process_audio_source(source_id: int) -> None:
     """Transcribe and store an audio source.
 
-    Runs after the request has been answered. It always ends by setting
-    the source to READY, NEEDS_REVIEW or FAILED.
+    Runs in the background worker. It always ends by setting the source to
+    READY, NEEDS_REVIEW or FAILED.
     """
+    # Step 1: look up what to transcribe, and let go of the database. The
+    # recognition can take minutes and must not keep a connection open.
     db = SessionLocal()
-
     try:
         source = db.query(SourceDB).filter(SourceDB.id == source_id).first()
         if source is None or not source.file_path:
             # Deleted before processing started.
             return
+        disk_path = to_disk_path(source.file_path)
+        language = source.language
+    finally:
+        db.close()
 
-        try:
-            transcript = transcription.transcribe(
-                to_disk_path(source.file_path),
-                language=source.language,
+    # Step 2: recognise the speech.
+    try:
+        transcript = transcription.transcribe(disk_path, language=language)
+
+        segments = []
+        for start, end, text in transcript.segments:
+            cleaned = clean_extracted_text(text)
+            if cleaned:
+                segments.append((start, end, cleaned))
+
+        if not segments:
+            raise transcription.TranscriptionError(transcription.NO_SPEECH)
+
+    except transcription.TranscriptionError as error:
+        _fail(source_id, error.code)
+        return
+    except Exception:
+        logger.exception("Processing of audio source %s failed", source_id)
+        _fail(source_id, transcription.TRANSCRIPTION_FAILED)
+        return
+
+    # Step 3: store the result.
+    db = SessionLocal()
+    try:
+        source = db.query(SourceDB).filter(SourceDB.id == source_id).first()
+        if source is None:
+            # Deleted while it was being transcribed.
+            return
+
+        db.execute(
+            delete(SourceSegmentDB).where(
+                SourceSegmentDB.source_id == source_id
             )
+        )
+        for index, (start, end, text) in enumerate(segments):
+            db.add(SourceSegmentDB(
+                source_id=source_id,
+                segment_index=index,
+                start_seconds=start,
+                end_seconds=end,
+                text=text,
+            ))
 
-            segments = []
-            for start, end, text in transcript.segments:
-                cleaned = clean_extracted_text(text)
-                if cleaned:
-                    segments.append((start, end, cleaned))
+        chunks = build_time_chunks(segments)
+        save_chunks(db, source_id, chunks)
 
-            if not segments:
-                raise transcription.TranscriptionError(transcription.NO_SPEECH)
+        if not source.language and transcript.language:
+            source.language = transcript.language[:10]
+        source.status, source.status_detail = assess_extraction_quality(
+            [chunk.text for chunk in chunks]
+        )
 
-            db.execute(
-                delete(SourceSegmentDB).where(
-                    SourceSegmentDB.source_id == source_id
-                )
-            )
-            for index, (start, end, text) in enumerate(segments):
-                db.add(SourceSegmentDB(
-                    source_id=source_id,
-                    segment_index=index,
-                    start_seconds=start,
-                    end_seconds=end,
-                    text=text,
-                ))
+        db.commit()
 
-            chunks = build_time_chunks(segments)
-            save_chunks(db, source_id, chunks)
-
-            if not source.language and transcript.language:
-                source.language = transcript.language[:10]
-            source.status, source.status_detail = assess_extraction_quality(
-                [chunk.text for chunk in chunks]
-            )
-
-            db.commit()
-
-        except Exception as error:
-            db.rollback()
-
-            code = transcription.TRANSCRIPTION_FAILED
-            if isinstance(error, transcription.TranscriptionError):
-                code = error.code
-            else:
-                logger.exception("Processing of audio source %s failed", source_id)
-
-            source = db.query(SourceDB).filter(
-                SourceDB.id == source_id
-            ).first()
-            if source is not None:
-                source.status = "FAILED"
-                source.status_detail = code
-                db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("Storing the transcript of source %s failed", source_id)
+        _fail(source_id, transcription.TRANSCRIPTION_FAILED)
 
     finally:
         db.close()
@@ -155,13 +174,29 @@ def _require_transcriber() -> None:
             detail="Audio processing is not installed on this server"
         )
 
+    if not worker.has_room():
+        raise HTTPException(
+            status_code=503,
+            detail="The server is busy with other audio files; try again later"
+        )
+
+
+def _start_processing(db: Session, source: SourceDB) -> None:
+    """Hand a source to the background worker."""
+    try:
+        worker.submit(process_audio_source, source.id)
+    except worker.WorkerBusy:
+        source.status = "FAILED"
+        source.status_detail = transcription.SERVER_BUSY
+        db.commit()
+        db.refresh(source)
+
 
 @router.post(
     "/projects/{project_id}/sources/audio",
     response_model=SourceResponse
 )
 def upload_audio(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     language: str | None = Form(default=None),
     project: ProjectDB = Depends(get_own_project),
@@ -249,14 +284,13 @@ def upload_audio(
             detail="Audio upload failed"
         )
 
-    background_tasks.add_task(process_audio_source, source.id)
+    _start_processing(db, source)
 
     return source
 
 
 @router.post("/sources/{source_id}/retry", response_model=SourceResponse)
 def retry_source(
-    background_tasks: BackgroundTasks,
     source: SourceDB = Depends(get_own_source),
     db: Session = Depends(get_db)
 ):
@@ -286,6 +320,6 @@ def retry_source(
     db.commit()
     db.refresh(source)
 
-    background_tasks.add_task(process_audio_source, source.id)
+    _start_processing(db, source)
 
     return source

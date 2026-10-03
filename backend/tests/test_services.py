@@ -265,3 +265,68 @@ def test_each_path_has_its_own_size_limit():
     assert MAX_AUDIO_SIZE_BYTES < request_limit_for("/projects/3/sources/audio/") < MAX_AUDIO_SIZE_BYTES * 1.1
     for path in ("/projects/", "/auth/register", "/sources/3/chunks/", "/pdf", ""):
         assert request_limit_for(path) == MAX_ORDINARY_REQUEST_BYTES, path
+
+
+def test_slow_jobs_are_done_one_at_a_time_and_in_order(monkeypatch):
+    import threading
+    import time
+
+    from app.core import worker
+
+    monkeypatch.setattr(worker, "_INLINE", False)
+
+    running = []
+    overlaps = []
+    done = []
+    finished = threading.Event()
+
+    def job(number):
+        running.append(number)
+        if len(running) > 1:
+            overlaps.append(list(running))
+        time.sleep(0.02)
+        running.remove(number)
+        done.append(number)
+        if number == "broken":
+            raise RuntimeError("a job that fails")
+        if number == 5:
+            finished.set()
+
+    for number in (1, 2, "broken", 4, 5):
+        worker.submit(job, number)
+
+    assert finished.wait(timeout=5)
+    # In order, never two at once, and a failing job does not stop the line.
+    assert done == [1, 2, "broken", 4, 5]
+    assert overlaps == []
+
+
+def test_a_full_waiting_line_refuses_new_jobs(monkeypatch):
+    import threading
+
+    import pytest
+
+    from app.core import worker
+
+    monkeypatch.setattr(worker, "_INLINE", False)
+    monkeypatch.setattr(worker, "MAX_WAITING_JOBS", 2)
+
+    release = threading.Event()
+    started = threading.Event()
+
+    def blocked():
+        started.set()
+        release.wait(timeout=5)
+
+    worker.submit(blocked)
+    assert started.wait(timeout=5)
+    worker.submit(lambda: None)
+    worker.submit(lambda: None)
+
+    assert not worker.has_room()
+    with pytest.raises(worker.WorkerBusy):
+        worker.submit(lambda: None)
+
+    release.set()
+    worker._jobs.join()
+    assert worker.has_room()
