@@ -18,3 +18,9 @@ def clean_short_text(value: str, what: str) -> str:
         raise ValueError(f"{what} must not be empty")
 
     return value
+
+
+def title_from_filename(filename: str, max_chars: int = 255) -> str:
+    """A storable title made from the name of an uploaded file."""
+    title = _CONTROL_CHARS.sub("", filename).strip()
+    return title[:max_chars] or "Untitled"

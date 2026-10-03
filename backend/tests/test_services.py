@@ -11,6 +11,8 @@ from app.services.chunking import (
 )
 from app.services.quality_check import assess_extraction_quality
 from app.services.text_cleaning import clean_extracted_text
+from app.services import youtube
+from app.services.youtube import parse_video_id
 
 
 # --- text cleaning ---------------------------------------------------------
@@ -144,6 +146,80 @@ def test_no_segments_give_no_time_chunks():
     assert build_time_chunks([]) == []
 
 
+# --- YouTube links -----------------------------------------------------------
+
+def test_video_id_is_found_in_every_link_form():
+    video_id = "jNQXAC9IVRw"
+    links = [
+        f"https://www.youtube.com/watch?v={video_id}",
+        f"https://youtube.com/watch?v={video_id}&t=42s&list=PL123",
+        f"https://m.youtube.com/watch?feature=share&v={video_id}",
+        f"http://www.youtube.com/watch?v={video_id}",
+        f"www.youtube.com/watch?v={video_id}",
+        f"https://youtu.be/{video_id}",
+        f"https://youtu.be/{video_id}?si=abc&t=10",
+        f"https://www.youtube.com/shorts/{video_id}",
+        f"https://www.youtube.com/embed/{video_id}?start=3",
+        f"https://www.youtube.com/live/{video_id}",
+        f"  https://youtu.be/{video_id}  ",
+    ]
+    for link in links:
+        assert parse_video_id(link) == video_id, link
+
+
+def test_other_links_are_rejected():
+    links = [
+        "",
+        "   ",
+        "not a link",
+        "https://www.youtube.com/",
+        "https://www.youtube.com/watch",
+        "https://www.youtube.com/watch?v=short",
+        "https://www.youtube.com/watch?v=jNQXAC9IVRw-too-long",
+        "https://www.youtube.com/playlist?list=PL123",
+        "https://www.youtube.com/@channel",
+        "https://vimeo.com/123456789",
+        "https://evil.example/watch?v=jNQXAC9IVRw",
+        "https://youtube.com.evil.example/watch?v=jNQXAC9IVRw",
+        "javascript:alert(1)//youtu.be/jNQXAC9IVRw",
+        "ftp://youtu.be/jNQXAC9IVRw",
+    ]
+    for link in links:
+        assert parse_video_id(link) is None, link
+
+
+def test_every_youtube_request_has_a_time_limit(monkeypatch):
+    import requests
+
+    seen = {}
+
+    def fake_request(self, method, url, **kwargs):
+        seen.update(kwargs)
+        raise requests.ConnectionError("no network in tests")
+
+    monkeypatch.setattr(requests.Session, "request", fake_request)
+
+    try:
+        youtube._http_session().get("https://www.youtube.com/")
+    except requests.ConnectionError:
+        pass
+
+    assert seen["timeout"] == youtube.REQUEST_TIMEOUT_SECONDS
+
+
+def test_unreachable_youtube_is_reported_as_fetch_failed(monkeypatch):
+    import pytest
+    import requests
+
+    def fake_request(self, method, url, **kwargs):
+        raise requests.ConnectionError("no network in tests")
+
+    monkeypatch.setattr(requests.Session, "request", fake_request)
+
+    with pytest.raises(youtube.YouTubeError) as error:
+        youtube.fetch_youtube("jNQXAC9IVRw")
+
+    assert error.value.code == youtube.FETCH_FAILED
 # --- findings of the strict review ---------------------------------------------
 
 def test_mathematical_notation_is_not_flattened():
@@ -253,6 +329,74 @@ def test_body_limit_lets_a_small_body_through():
     assert (status, seen) == (200, [5, 5])
 
 
+def test_youtube_library_errors_are_mapped_to_reasons(monkeypatch):
+    import pytest
+    from youtube_transcript_api import YouTubeTranscriptApi
+    from youtube_transcript_api import _errors as errors
+
+    video = "jNQXAC9IVRw"
+    cases = [
+        (errors.TranscriptsDisabled(video), youtube.NO_TRANSCRIPT),
+        (errors.NoTranscriptFound(video, ["en"], []), youtube.NO_TRANSCRIPT),
+        (errors.VideoUnavailable(video), youtube.VIDEO_UNAVAILABLE),
+        (errors.InvalidVideoId(video), youtube.VIDEO_UNAVAILABLE),
+        (errors.AgeRestricted(video), youtube.VIDEO_UNAVAILABLE),
+        (errors.RequestBlocked(video), youtube.BLOCKED),
+        (errors.IpBlocked(video), youtube.BLOCKED),
+        (RuntimeError("anything else"), youtube.FETCH_FAILED),
+    ]
+
+    for library_error, expected in cases:
+        def fail(self, video_id, _error=library_error):
+            raise _error
+
+        monkeypatch.setattr(YouTubeTranscriptApi, "list", fail)
+
+        with pytest.raises(youtube.YouTubeError) as raised:
+            youtube.fetch_youtube(video)
+
+        assert raised.value.code == expected, type(library_error).__name__
+
+
+def test_youtube_captions_become_timed_segments(monkeypatch):
+    from youtube_transcript_api import YouTubeTranscriptApi
+    from youtube_transcript_api._transcripts import (
+        FetchedTranscript,
+        FetchedTranscriptSnippet,
+    )
+
+    fetched = FetchedTranscript(
+        snippets=[
+            FetchedTranscriptSnippet(text="hello", start=0.0, duration=1.5),
+            FetchedTranscriptSnippet(text="world", start=1.5, duration=2.0),
+        ],
+        video_id="jNQXAC9IVRw",
+        language="English",
+        language_code="en",
+        is_generated=False,
+    )
+
+    class OneTranscript:
+        def fetch(self):
+            return fetched
+
+    monkeypatch.setattr(
+        YouTubeTranscriptApi, "list", lambda self, video_id: [OneTranscript()]
+    )
+    monkeypatch.setattr(youtube, "_fetch_title", lambda video_id: "A title")
+
+    result = youtube.fetch_youtube("jNQXAC9IVRw")
+
+    assert result.title == "A title"
+    assert result.language == "en"
+    assert result.segments == [(0.0, 1.5, "hello"), (1.5, 3.5, "world")]
+
+    monkeypatch.setattr(YouTubeTranscriptApi, "list", lambda self, video_id: [])
+    try:
+        youtube.fetch_youtube("jNQXAC9IVRw")
+        raise AssertionError("expected NO_TRANSCRIPT")
+    except youtube.YouTubeError as error:
+        assert error.code == youtube.NO_TRANSCRIPT
 def test_each_path_has_its_own_size_limit():
     from app.core.limits import (
         MAX_AUDIO_SIZE_BYTES,
@@ -274,6 +418,7 @@ def test_slow_jobs_are_done_one_at_a_time_and_in_order(monkeypatch):
     from app.core import worker
 
     monkeypatch.setattr(worker, "_INLINE", False)
+    line = worker.JobLine("test", max_waiting=10)
 
     running = []
     overlaps = []
@@ -293,7 +438,7 @@ def test_slow_jobs_are_done_one_at_a_time_and_in_order(monkeypatch):
             finished.set()
 
     for number in (1, 2, "broken", 4, 5):
-        worker.submit(job, number)
+        line.submit(job, number)
 
     assert finished.wait(timeout=5)
     # In order, never two at once, and a failing job does not stop the line.
@@ -309,7 +454,7 @@ def test_a_full_waiting_line_refuses_new_jobs(monkeypatch):
     from app.core import worker
 
     monkeypatch.setattr(worker, "_INLINE", False)
-    monkeypatch.setattr(worker, "MAX_WAITING_JOBS", 2)
+    line = worker.JobLine("test", max_waiting=2)
 
     release = threading.Event()
     started = threading.Event()
@@ -318,15 +463,145 @@ def test_a_full_waiting_line_refuses_new_jobs(monkeypatch):
         started.set()
         release.wait(timeout=5)
 
-    worker.submit(blocked)
+    line.submit(blocked)
     assert started.wait(timeout=5)
-    worker.submit(lambda: None)
-    worker.submit(lambda: None)
+    line.submit(lambda: None)
+    line.submit(lambda: None)
 
-    assert not worker.has_room()
+    assert not line.has_room()
     with pytest.raises(worker.WorkerBusy):
-        worker.submit(lambda: None)
+        line.submit(lambda: None)
 
     release.set()
-    worker._jobs.join()
-    assert worker.has_room()
+    line.wait_until_empty()
+    assert line.has_room()
+
+
+def test_simultaneous_submits_cannot_overfill_the_line(monkeypatch):
+    import threading
+
+    from app.core import worker
+
+    monkeypatch.setattr(worker, "_INLINE", False)
+    line = worker.JobLine("test", max_waiting=5)
+
+    release = threading.Event()
+    started = threading.Event()
+
+    def blocked():
+        started.set()
+        release.wait(timeout=5)
+
+    line.submit(blocked)
+    assert started.wait(timeout=5)
+
+    accepted = []
+    refused = []
+
+    def try_submit():
+        try:
+            line.submit(lambda: None)
+            accepted.append(1)
+        except worker.WorkerBusy:
+            refused.append(1)
+
+    threads = [threading.Thread(target=try_submit) for _ in range(40)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert (len(accepted), len(refused)) == (5, 35)
+    release.set()
+    line.wait_until_empty()
+
+
+def test_youtube_requests_go_through_the_proxy_when_one_is_set(monkeypatch):
+    monkeypatch.delenv("YOUTUBE_PROXY_URL", raising=False)
+    assert youtube._http_session().proxies == {}
+
+    monkeypatch.setenv("YOUTUBE_PROXY_URL", " http://user:pass@proxy.example:8080 ")
+    assert youtube._http_session().proxies == {
+        "http": "http://user:pass@proxy.example:8080",
+        "https": "http://user:pass@proxy.example:8080",
+    }
+
+
+def test_an_unfinished_link_is_refused_not_an_error():
+    for link in ("http://[", "https://[::1", "http://[youtu.be]/jNQXAC9IVRw"):
+        assert parse_video_id(link) is None, link
+
+
+def test_a_title_is_made_from_any_file_name():
+    from app.models.validation import title_from_filename
+
+    assert title_from_filename("  درس\x00 اول\x07.mp3 ") == "درس اول.mp3"
+    assert title_from_filename("\x00\x01") == "Untitled"
+    assert len(title_from_filename("n" * 300 + ".pdf")) == 255
+
+
+def _gate(method, path, headers=()):
+    from app.core.upload_gate import refuse_before_reading
+
+    return refuse_before_reading({
+        "type": "http", "method": method, "path": path, "headers": list(headers),
+    })
+
+
+def test_uploads_are_refused_unread_without_a_valid_login(monkeypatch):
+    from app.core import worker
+    from app.core.security import create_access_token
+    from app.services import transcription
+
+    monkeypatch.setattr(transcription, "is_available", lambda: True)
+    good = (b"authorization", f"Bearer {create_access_token(7)}".encode())
+
+    for path in ("/projects/1/sources/pdf", "/projects/1/sources/audio/"):
+        assert _gate("POST", path) == (401, "Not logged in")
+        assert _gate("POST", path, [(b"authorization", b"Bearer nonsense")])[0] == 401
+        assert _gate("POST", path, [(b"authorization", b"Basic abc")])[0] == 401
+        assert _gate("POST", path, [good]) is None
+
+    # Everything else is left to the endpoints themselves.
+    assert _gate("POST", "/projects/") is None
+    assert _gate("GET", "/projects/1/sources/pdf") is None
+
+    # Audio is also refused unread when it could not be processed anyway.
+    monkeypatch.setattr(worker.speech, "has_room", lambda: False)
+    assert _gate("POST", "/projects/1/sources/audio", [good])[0] == 503
+    assert _gate("POST", "/projects/1/sources/pdf", [good]) is None
+    monkeypatch.setattr(worker.speech, "has_room", lambda: True)
+    monkeypatch.setattr(transcription, "is_available", lambda: False)
+    assert _gate("POST", "/projects/1/sources/audio", [good])[0] == 503
+
+
+def test_a_refused_upload_is_not_read_at_all():
+    import asyncio
+
+    from app.core.body_limit import BodySizeLimitMiddleware
+
+    reads = []
+
+    async def inner(scope, receive, send):
+        raise AssertionError("the request reached the app")
+
+    async def receive():
+        reads.append(1)
+        return {"type": "http.request", "body": b"x" * 1000, "more_body": True}
+
+    sent = []
+
+    async def send(message):
+        sent.append(message)
+
+    middleware = BodySizeLimitMiddleware(
+        inner,
+        limit_for=lambda path: 10**9,
+        refuse_before_reading=lambda scope: (401, "Not logged in"),
+    )
+    asyncio.run(middleware(
+        {"type": "http", "method": "POST", "path": "/x", "headers": []}, receive, send
+    ))
+
+    assert sent[0]["status"] == 401
+    assert reads == []
