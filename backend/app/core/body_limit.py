@@ -21,9 +21,17 @@ class BodySizeLimitMiddleware:
     bytes, that this path may receive.
     """
 
-    def __init__(self, app, limit_for: Callable[[str], int]):
+    def __init__(
+        self,
+        app,
+        limit_for: Callable[[str], int],
+        refuse_before_reading: Callable | None = None,
+    ):
         self.app = app
         self.limit_for = limit_for
+        # Optional: given the request, returns (status, message) to refuse
+        # it before its body is read, or None to let it through.
+        self.refuse_before_reading = refuse_before_reading
 
     @staticmethod
     def _detail(max_bytes: int) -> str:
@@ -31,10 +39,14 @@ class BodySizeLimitMiddleware:
         return f"Request is larger than {megabytes} MB"
 
     async def _reject(self, send, max_bytes: int) -> None:
-        body = json.dumps({"detail": self._detail(max_bytes)}).encode("utf-8")
+        await self._answer(send, 413, self._detail(max_bytes))
+
+    @staticmethod
+    async def _answer(send, status: int, detail: str) -> None:
+        body = json.dumps({"detail": detail}).encode("utf-8")
         await send({
             "type": "http.response.start",
-            "status": 413,
+            "status": status,
             "headers": [
                 (b"content-type", b"application/json"),
                 (b"content-length", str(len(body)).encode("ascii")),
@@ -47,6 +59,12 @@ class BodySizeLimitMiddleware:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
+
+        if self.refuse_before_reading is not None:
+            refusal = self.refuse_before_reading(scope)
+            if refusal is not None:
+                await self._answer(send, *refusal)
+                return
 
         max_bytes = self.limit_for(scope.get("path", ""))
 

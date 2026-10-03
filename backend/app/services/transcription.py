@@ -27,6 +27,7 @@ TRANSCRIBER_UNAVAILABLE = "TRANSCRIBER_UNAVAILABLE"
 TRANSCRIPTION_FAILED = "TRANSCRIPTION_FAILED"
 NO_SPEECH = "NO_SPEECH"
 SERVER_BUSY = "SERVER_BUSY"
+AUDIO_TOO_LONG = "AUDIO_TOO_LONG"
 
 
 class AudioError(Exception):
@@ -90,6 +91,38 @@ def probe_audio(path: str) -> float:
         raise
     except Exception:
         raise AudioError("The file is not valid audio")
+
+
+def measure_audio(path: str, limit_seconds: float) -> float:
+    """Return the real length of the audio in seconds, by decoding it.
+
+    The length written in a file's header can be wrong or forged, and the
+    recogniser holds the whole decoded recording in memory. So the sound
+    itself is counted, and counting stops as soon as the limit is passed.
+
+    Raises TranscriptionError(AUDIO_TOO_LONG) beyond the limit and
+    AudioError if the file cannot be decoded.
+    """
+    import av
+
+    seconds = 0.0
+
+    try:
+        with av.open(path) as container:
+            if not container.streams.audio:
+                raise AudioError("The file has no audio")
+
+            for frame in container.decode(audio=0):
+                if frame.sample_rate:
+                    seconds += frame.samples / frame.sample_rate
+                if seconds > limit_seconds:
+                    raise TranscriptionError(AUDIO_TOO_LONG)
+    except (AudioError, TranscriptionError):
+        raise
+    except Exception:
+        raise AudioError("The file is not valid audio")
+
+    return seconds
 
 
 _model = None

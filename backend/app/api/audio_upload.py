@@ -1,5 +1,4 @@
 import logging
-import math
 import os
 import uuid
 
@@ -19,11 +18,17 @@ from app.api.source_chunks import save_chunks
 from app.core import worker
 from app.core.config import UPLOAD_ROOT, to_disk_path, to_stored_path
 from app.core.database import SessionLocal, get_db
+from app.core.processing import (
+    mark_failed,
+    require_processing_slot,
+    still_processing,
+)
 from app.core.limits import MAX_AUDIO_HOURS, MAX_AUDIO_SIZE_BYTES, MAX_AUDIO_SIZE_MB
 from app.models.project import ProjectDB
 from app.models.source import SourceDB, SourceResponse, project_sources
 from app.models.source_segment import SourceSegmentDB
 from app.models.user import UserDB
+from app.models.validation import title_from_filename
 from app.services import transcription
 from app.services.chunking import build_time_chunks
 from app.services.quality_check import assess_extraction_quality
@@ -73,39 +78,41 @@ def _store_upload(file: UploadFile, file_path: str) -> None:
             buffer.write(block)
 
 
-def _fail(source_id: int, code: str) -> None:
-    db = SessionLocal()
-    try:
-        source = db.query(SourceDB).filter(SourceDB.id == source_id).first()
-        if source is not None:
-            source.status = "FAILED"
-            source.status_detail = code
-            db.commit()
-    finally:
-        db.close()
-
-
 def process_audio_source(source_id: int) -> None:
     """Transcribe and store an audio source.
 
     Runs in the background worker. It always ends by setting the source to
     READY, NEEDS_REVIEW or FAILED.
     """
+    try:
+        _process_audio_source(source_id)
+    except Exception:
+        logger.exception("Processing of audio source %s failed", source_id)
+        mark_failed(source_id, transcription.TRANSCRIPTION_FAILED)
+
+
+def _process_audio_source(source_id: int) -> None:
     # Step 1: look up what to transcribe, and let go of the database. The
     # recognition can take minutes and must not keep a connection open.
     db = SessionLocal()
     try:
-        source = db.query(SourceDB).filter(SourceDB.id == source_id).first()
+        source = db.query(SourceDB).filter(
+            SourceDB.id == source_id,
+            SourceDB.status == "PROCESSING"
+        ).first()
         if source is None or not source.file_path:
-            # Deleted before processing started.
+            # Deleted, or already finished, before processing started.
             return
         disk_path = to_disk_path(source.file_path)
         language = source.language
     finally:
         db.close()
 
-    # Step 2: recognise the speech.
+    # Step 2: measure the real length, then recognise the speech.
     try:
+        duration = transcription.measure_audio(
+            disk_path, MAX_AUDIO_HOURS * 3600
+        )
         transcript = transcription.transcribe(disk_path, language=language)
 
         segments = []
@@ -118,19 +125,18 @@ def process_audio_source(source_id: int) -> None:
             raise transcription.TranscriptionError(transcription.NO_SPEECH)
 
     except transcription.TranscriptionError as error:
-        _fail(source_id, error.code)
+        mark_failed(source_id, error.code)
         return
-    except Exception:
-        logger.exception("Processing of audio source %s failed", source_id)
-        _fail(source_id, transcription.TRANSCRIPTION_FAILED)
+    except transcription.AudioError:
+        mark_failed(source_id, transcription.TRANSCRIPTION_FAILED)
         return
 
-    # Step 3: store the result.
+    # Step 3: store the result, unless the source was deleted or finished
+    # by something else in the meantime.
     db = SessionLocal()
     try:
-        source = db.query(SourceDB).filter(SourceDB.id == source_id).first()
+        source = still_processing(db, source_id)
         if source is None:
-            # Deleted while it was being transcribed.
             return
 
         db.execute(
@@ -150,6 +156,7 @@ def process_audio_source(source_id: int) -> None:
         chunks = build_time_chunks(segments)
         save_chunks(db, source_id, chunks)
 
+        source.duration = max(1, round(duration))
         if not source.language and transcript.language:
             source.language = transcript.language[:10]
         source.status, source.status_detail = assess_extraction_quality(
@@ -160,8 +167,7 @@ def process_audio_source(source_id: int) -> None:
 
     except Exception:
         db.rollback()
-        logger.exception("Storing the transcript of source %s failed", source_id)
-        _fail(source_id, transcription.TRANSCRIPTION_FAILED)
+        raise
 
     finally:
         db.close()
@@ -174,7 +180,7 @@ def require_transcriber() -> None:
             detail="Audio processing is not installed on this server"
         )
 
-    if not worker.has_room():
+    if not worker.speech.has_room():
         raise HTTPException(
             status_code=503,
             detail="The server is busy with other audio files; try again later"
@@ -184,11 +190,9 @@ def require_transcriber() -> None:
 def start_processing(db: Session, source: SourceDB) -> None:
     """Hand a source to the background worker."""
     try:
-        worker.submit(process_audio_source, source.id)
+        worker.speech.submit(process_audio_source, source.id)
     except worker.WorkerBusy:
-        source.status = "FAILED"
-        source.status_detail = transcription.SERVER_BUSY
-        db.commit()
+        mark_failed(source.id, transcription.SERVER_BUSY)
         db.refresh(source)
 
 
@@ -210,6 +214,7 @@ def upload_audio(
     "fa" or "en". It is optional, but giving it avoids a wrong guess.
     """
     require_transcriber()
+    require_processing_slot(db, user.id)
 
     language = (language or "").strip().lower() or None
     if language is not None and language not in transcription.supported_languages():
@@ -249,11 +254,11 @@ def upload_audio(
 
         source = SourceDB(
             user_id=user.id,
-            title=filename[:MAX_TITLE_CHARS],
+            title=title_from_filename(filename, MAX_TITLE_CHARS),
             source_type="AUDIO",
             language=language,
             file_path=to_stored_path(file_path),
-            duration=math.ceil(duration),
+            duration=max(1, round(duration)),
             status="PROCESSING",
         )
 

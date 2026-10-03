@@ -24,6 +24,7 @@ NO_TRANSCRIPT = "NO_TRANSCRIPT"
 VIDEO_UNAVAILABLE = "VIDEO_UNAVAILABLE"
 BLOCKED = "BLOCKED_BY_YOUTUBE"
 FETCH_FAILED = "FETCH_FAILED"
+SERVER_BUSY = "SERVER_BUSY"
 
 
 class YouTubeError(Exception):
@@ -51,11 +52,16 @@ def parse_video_id(url: str) -> str | None:
     if "://" not in url:
         url = "https://" + url
 
-    parsed = urlparse(url)
+    try:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+    except ValueError:
+        # For example an unfinished "http://[".
+        return None
+
     if parsed.scheme not in ("http", "https"):
         return None
 
-    host = (parsed.hostname or "").lower()
     candidate = None
 
     if host in _SHORT_HOSTS:

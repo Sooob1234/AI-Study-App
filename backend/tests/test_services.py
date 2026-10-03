@@ -418,6 +418,7 @@ def test_slow_jobs_are_done_one_at_a_time_and_in_order(monkeypatch):
     from app.core import worker
 
     monkeypatch.setattr(worker, "_INLINE", False)
+    line = worker.JobLine("test", max_waiting=10)
 
     running = []
     overlaps = []
@@ -437,7 +438,7 @@ def test_slow_jobs_are_done_one_at_a_time_and_in_order(monkeypatch):
             finished.set()
 
     for number in (1, 2, "broken", 4, 5):
-        worker.submit(job, number)
+        line.submit(job, number)
 
     assert finished.wait(timeout=5)
     # In order, never two at once, and a failing job does not stop the line.
@@ -453,7 +454,7 @@ def test_a_full_waiting_line_refuses_new_jobs(monkeypatch):
     from app.core import worker
 
     monkeypatch.setattr(worker, "_INLINE", False)
-    monkeypatch.setattr(worker, "MAX_WAITING_JOBS", 2)
+    line = worker.JobLine("test", max_waiting=2)
 
     release = threading.Event()
     started = threading.Event()
@@ -462,18 +463,57 @@ def test_a_full_waiting_line_refuses_new_jobs(monkeypatch):
         started.set()
         release.wait(timeout=5)
 
-    worker.submit(blocked)
+    line.submit(blocked)
     assert started.wait(timeout=5)
-    worker.submit(lambda: None)
-    worker.submit(lambda: None)
+    line.submit(lambda: None)
+    line.submit(lambda: None)
 
-    assert not worker.has_room()
+    assert not line.has_room()
     with pytest.raises(worker.WorkerBusy):
-        worker.submit(lambda: None)
+        line.submit(lambda: None)
 
     release.set()
-    worker._jobs.join()
-    assert worker.has_room()
+    line.wait_until_empty()
+    assert line.has_room()
+
+
+def test_simultaneous_submits_cannot_overfill_the_line(monkeypatch):
+    import threading
+
+    from app.core import worker
+
+    monkeypatch.setattr(worker, "_INLINE", False)
+    line = worker.JobLine("test", max_waiting=5)
+
+    release = threading.Event()
+    started = threading.Event()
+
+    def blocked():
+        started.set()
+        release.wait(timeout=5)
+
+    line.submit(blocked)
+    assert started.wait(timeout=5)
+
+    accepted = []
+    refused = []
+
+    def try_submit():
+        try:
+            line.submit(lambda: None)
+            accepted.append(1)
+        except worker.WorkerBusy:
+            refused.append(1)
+
+    threads = [threading.Thread(target=try_submit) for _ in range(40)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert (len(accepted), len(refused)) == (5, 35)
+    release.set()
+    line.wait_until_empty()
 
 
 def test_youtube_requests_go_through_the_proxy_when_one_is_set(monkeypatch):
@@ -485,3 +525,83 @@ def test_youtube_requests_go_through_the_proxy_when_one_is_set(monkeypatch):
         "http": "http://user:pass@proxy.example:8080",
         "https": "http://user:pass@proxy.example:8080",
     }
+
+
+def test_an_unfinished_link_is_refused_not_an_error():
+    for link in ("http://[", "https://[::1", "http://[youtu.be]/jNQXAC9IVRw"):
+        assert parse_video_id(link) is None, link
+
+
+def test_a_title_is_made_from_any_file_name():
+    from app.models.validation import title_from_filename
+
+    assert title_from_filename("  درس\x00 اول\x07.mp3 ") == "درس اول.mp3"
+    assert title_from_filename("\x00\x01") == "Untitled"
+    assert len(title_from_filename("n" * 300 + ".pdf")) == 255
+
+
+def _gate(method, path, headers=()):
+    from app.core.upload_gate import refuse_before_reading
+
+    return refuse_before_reading({
+        "type": "http", "method": method, "path": path, "headers": list(headers),
+    })
+
+
+def test_uploads_are_refused_unread_without_a_valid_login(monkeypatch):
+    from app.core import worker
+    from app.core.security import create_access_token
+    from app.services import transcription
+
+    monkeypatch.setattr(transcription, "is_available", lambda: True)
+    good = (b"authorization", f"Bearer {create_access_token(7)}".encode())
+
+    for path in ("/projects/1/sources/pdf", "/projects/1/sources/audio/"):
+        assert _gate("POST", path) == (401, "Not logged in")
+        assert _gate("POST", path, [(b"authorization", b"Bearer nonsense")])[0] == 401
+        assert _gate("POST", path, [(b"authorization", b"Basic abc")])[0] == 401
+        assert _gate("POST", path, [good]) is None
+
+    # Everything else is left to the endpoints themselves.
+    assert _gate("POST", "/projects/") is None
+    assert _gate("GET", "/projects/1/sources/pdf") is None
+
+    # Audio is also refused unread when it could not be processed anyway.
+    monkeypatch.setattr(worker.speech, "has_room", lambda: False)
+    assert _gate("POST", "/projects/1/sources/audio", [good])[0] == 503
+    assert _gate("POST", "/projects/1/sources/pdf", [good]) is None
+    monkeypatch.setattr(worker.speech, "has_room", lambda: True)
+    monkeypatch.setattr(transcription, "is_available", lambda: False)
+    assert _gate("POST", "/projects/1/sources/audio", [good])[0] == 503
+
+
+def test_a_refused_upload_is_not_read_at_all():
+    import asyncio
+
+    from app.core.body_limit import BodySizeLimitMiddleware
+
+    reads = []
+
+    async def inner(scope, receive, send):
+        raise AssertionError("the request reached the app")
+
+    async def receive():
+        reads.append(1)
+        return {"type": "http.request", "body": b"x" * 1000, "more_body": True}
+
+    sent = []
+
+    async def send(message):
+        sent.append(message)
+
+    middleware = BodySizeLimitMiddleware(
+        inner,
+        limit_for=lambda path: 10**9,
+        refuse_before_reading=lambda scope: (401, "Not logged in"),
+    )
+    asyncio.run(middleware(
+        {"type": "http", "method": "POST", "path": "/x", "headers": []}, receive, send
+    ))
+
+    assert sent[0]["status"] == 401
+    assert reads == []

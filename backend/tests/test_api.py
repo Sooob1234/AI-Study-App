@@ -717,7 +717,7 @@ def test_audio_is_refused_while_the_waiting_line_is_full(client, new_user, monke
     from app.core import worker
 
     _audio_ready()
-    monkeypatch.setattr(worker, "has_room", lambda: False)
+    monkeypatch.setattr(worker.speech, "has_room", lambda: False)
     headers, _ = new_user()
     project_id = _project(client, headers)
     folder = os.path.join(os.environ["UPLOAD_ROOT"], "audio")
@@ -816,3 +816,211 @@ def test_failed_youtube_source_can_be_retried(client, new_user, monkeypatch):
     source = client.get(f"/sources/{created['id']}", headers=headers).json()
     assert (source["status"], source["title"]) == ("READY", "Lecture")
     assert client.post(f"/sources/{created['id']}/retry", headers=headers).status_code == 400
+
+
+# --- findings of the second strict review ----------------------------------------
+
+def test_real_audio_length_is_measured_not_trusted(client, new_user, monkeypatch, tmp_path):
+    import pytest
+
+    from app.api import audio_upload
+    from app.services import transcription
+    from app.services.transcription import Transcript
+
+    _audio_ready()
+
+    path = tmp_path / "tone.wav"
+    path.write_bytes(_wav(seconds=3.0))
+    assert transcription.measure_audio(str(path), 60) == pytest.approx(3.0, abs=0.05)
+    with pytest.raises(transcription.TranscriptionError) as error:
+        transcription.measure_audio(str(path), 1)
+    assert error.value.code == "AUDIO_TOO_LONG"
+
+    # Through the app: a recording longer than allowed is never transcribed,
+    # whatever its header says, and the stored length is the measured one.
+    calls = _fake_transcriber(monkeypatch, Transcript("en", [(0.0, 2.0, "spoken words here " * 5)]))
+    monkeypatch.setattr(transcription, "probe_audio", lambda path: 1.0)
+    headers, _ = new_user()
+    project_id = _project(client, headers)
+
+    created = _upload_audio(client, headers, project_id, _wav(seconds=3.0)).json()
+    assert created["duration"] == 1
+    source = client.get(f"/sources/{created['id']}", headers=headers).json()
+    assert (source["status"], source["duration"]) == ("READY", 3)
+
+    monkeypatch.setattr(audio_upload, "MAX_AUDIO_HOURS", 2 / 3600)
+    created = _upload_audio(client, headers, project_id, _wav(seconds=3.0)).json()
+    source = client.get(f"/sources/{created['id']}", headers=headers).json()
+    assert (source["status"], source["status_detail"]) == ("FAILED", "AUDIO_TOO_LONG")
+    assert len(calls) == 1
+
+
+def test_a_failed_source_is_claimed_by_only_one_retry(client, new_user, monkeypatch):
+    from app.core.database import SessionLocal
+    from app.core.processing import claim_failed_source
+    from app.services.youtube import YouTubeError
+
+    _fake_youtube(monkeypatch, YouTubeError("BLOCKED_BY_YOUTUBE"))
+    headers, _ = new_user()
+    created = _add_video(client, headers, _project(client, headers)).json()
+
+    first, second = SessionLocal(), SessionLocal()
+    try:
+        assert claim_failed_source(first, created["id"]) is True
+        assert claim_failed_source(second, created["id"]) is False
+    finally:
+        first.close()
+        second.close()
+
+    assert client.get(f"/sources/{created['id']}", headers=headers).json()["status"] == "PROCESSING"
+    # While it is in processing, a retry is refused.
+    assert client.post(f"/sources/{created['id']}/retry", headers=headers).status_code == 400
+
+
+def test_a_job_never_writes_to_a_source_that_is_no_longer_waiting(client, new_user, monkeypatch):
+    from app.api.youtube import process_youtube_source
+    from app.core.processing import mark_failed
+    from app.services.youtube import YouTubeTranscript
+
+    headers, _ = new_user()
+    project_id = _project(client, headers)
+    text = "a sentence spoken in the lecture about the topic " * 3
+    _fake_youtube(monkeypatch, YouTubeTranscript("First", "en", [(0.0, 5.0, text)]))
+    created = _add_video(client, headers, project_id).json()
+    assert client.get(f"/sources/{created['id']}", headers=headers).json()["status"] == "READY"
+
+    # A second, late job for the same source must change nothing.
+    _fake_youtube(monkeypatch, YouTubeTranscript("Second", "en", [(0.0, 9.0, text * 2)]))
+    process_youtube_source(created["id"], "jNQXAC9IVRw")
+    mark_failed(created["id"], "FETCH_FAILED")
+
+    source = client.get(f"/sources/{created['id']}", headers=headers).json()
+    assert (source["status"], source["title"], source["duration"]) == ("READY", "First", 5)
+    assert len(client.get(f"/sources/{created['id']}/segments/", headers=headers).json()) == 1
+
+    # A job for a source that was deleted in the meantime does nothing.
+    client.delete(f"/sources/{created['id']}", headers=headers)
+    process_youtube_source(created["id"], "jNQXAC9IVRw")
+    assert client.get(f"/sources/{created['id']}", headers=headers).status_code == 404
+
+
+def test_source_deleted_while_it_is_being_transcribed(client, new_user, monkeypatch):
+    from app.services import transcription
+    from app.services.transcription import Transcript
+
+    _audio_ready()
+    headers, _ = new_user()
+    project_id = _project(client, headers)
+    state = {}
+
+    def transcribe(path, language=None):
+        # The user deletes the source while the recogniser is at work.
+        state["deleted"] = client.delete(
+            f"/sources/{state['id']}", headers=headers
+        ).status_code
+        return Transcript("en", [(0.0, 2.0, "spoken words here " * 5)])
+
+    monkeypatch.setattr(transcription, "transcribe", transcribe)
+    real_measure = transcription.measure_audio
+
+    def measure(path, limit):
+        state["id"] = max(
+            item["id"] for item in
+            client.get(f"/projects/{project_id}/sources/", headers=headers).json()
+        )
+        return real_measure(path, limit)
+
+    monkeypatch.setattr(transcription, "measure_audio", measure)
+
+    response = _upload_audio(client, headers, project_id)
+    assert response.status_code == 200
+    assert state["deleted"] == 200
+    assert client.get(f"/sources/{state['id']}", headers=headers).status_code == 404
+    assert client.get(f"/sources/{state['id']}/segments/", headers=headers).status_code == 404
+
+
+def test_a_user_can_have_only_a_few_sources_in_processing(client, new_user, monkeypatch):
+    from app.core.database import SessionLocal
+    from app.core.limits import MAX_PROCESSING_PER_USER
+    from app.models.source import SourceDB
+    from app.services.youtube import YouTubeError
+
+    _fake_youtube(monkeypatch, YouTubeError("BLOCKED_BY_YOUTUBE"))
+    headers, user = new_user()
+    other, _ = new_user()
+    project_id = _project(client, headers)
+
+    ids = [_add_video(client, headers, project_id).json()["id"] for _ in range(MAX_PROCESSING_PER_USER)]
+    db = SessionLocal()
+    db.query(SourceDB).filter(SourceDB.id.in_(ids)).update({"status": "PROCESSING"})
+    db.commit()
+    db.close()
+
+    assert _add_video(client, headers, project_id).status_code == 429
+    # Sending the transcript itself needs no processing, so it is allowed.
+    with_text = client.post(
+        f"/projects/{project_id}/sources/youtube",
+        json={"url": VIDEO, "segments": [{"start": 0, "duration": 2, "text": "hello there " * 5}]},
+        headers=headers,
+    )
+    assert with_text.status_code == 200
+    # Another user is not affected.
+    assert _add_video(client, other, _project(client, other)).status_code == 200
+
+
+def test_file_names_with_control_characters_are_accepted(client, new_user):
+    headers, _ = new_user()
+    project_id = _project(client, headers)
+
+    # (The test client escapes the character on the way; the cleaning itself
+    # is checked in test_a_title_is_made_from_any_file_name.)
+    response = _upload(client, headers, project_id, name="notes\x07 one.pdf")
+    assert response.status_code == 200
+    assert "\x07" not in response.json()["title"]
+
+    assert client.post(
+        f"/projects/{project_id}/sources/youtube", json={"url": "http://["}, headers=headers
+    ).status_code == 400
+
+
+def test_oversized_upload_without_login_is_refused(client):
+    response = client.post(
+        "/projects/1/sources/audio",
+        files={"file": ("a.wav", b"0" * 3_000_000, "audio/wav")},
+    )
+    assert response.status_code == 401
+
+
+def test_jobs_really_run_in_the_background(client, new_user, monkeypatch):
+    import threading
+    import time
+
+    from app.core import worker
+    from app.services import transcription
+    from app.services.transcription import Transcript
+
+    _audio_ready()
+    monkeypatch.setattr(worker, "_INLINE", False)
+    release = threading.Event()
+
+    def transcribe(path, language=None):
+        release.wait(timeout=10)
+        return Transcript("en", [(0.0, 2.0, "spoken words here " * 5)])
+
+    monkeypatch.setattr(transcription, "transcribe", transcribe)
+    headers, _ = new_user()
+    project_id = _project(client, headers)
+
+    created = _upload_audio(client, headers, project_id).json()
+    # The job is still running, and the app keeps answering meanwhile.
+    assert client.get(f"/sources/{created['id']}", headers=headers).json()["status"] == "PROCESSING"
+    assert client.post(f"/sources/{created['id']}/retry", headers=headers).status_code == 400
+
+    release.set()
+    worker.speech.wait_until_empty()
+    for _ in range(50):
+        source = client.get(f"/sources/{created['id']}", headers=headers).json()
+        if source["status"] != "PROCESSING":
+            break
+        time.sleep(0.1)
+    assert source["status"] == "READY"

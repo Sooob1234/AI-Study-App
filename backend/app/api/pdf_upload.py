@@ -13,6 +13,7 @@ from app.core.database import get_db
 from app.core.limits import MAX_PDF_SIZE_BYTES, MAX_PDF_SIZE_MB
 from app.models.project import ProjectDB
 from app.models.user import UserDB
+from app.models.validation import title_from_filename
 from app.models.source import SourceDB, SourceResponse, project_sources
 from app.models.source_page import SourcePageDB
 from app.services.chunking import build_chunks
@@ -113,7 +114,7 @@ def upload_pdf(
 
         source = SourceDB(
             user_id=user.id,
-            title=filename[:MAX_TITLE_CHARS],
+            title=title_from_filename(filename, MAX_TITLE_CHARS),
             source_type="PDF",
             file_path=to_stored_path(file_path),
             page_count=page_count,

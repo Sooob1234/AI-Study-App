@@ -9,7 +9,12 @@ MAX_PDF_SIZE_BYTES = MAX_PDF_SIZE_MB * MEGABYTE
 # Largest audio file accepted, and the longest recording.
 MAX_AUDIO_SIZE_MB = 200
 MAX_AUDIO_SIZE_BYTES = MAX_AUDIO_SIZE_MB * MEGABYTE
-MAX_AUDIO_HOURS = 4
+# The whole recording is held in memory while it is transcribed (about
+# 230 MB per hour), so the length is what bounds memory use.
+MAX_AUDIO_HOURS = 2
+
+# How many sources one user may have in processing at the same time.
+MAX_PROCESSING_PER_USER = 5
 
 # A YouTube source may be sent together with its transcript.
 MAX_TRANSCRIPT_REQUEST_BYTES = 5 * MEGABYTE

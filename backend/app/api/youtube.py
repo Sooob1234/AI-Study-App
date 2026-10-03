@@ -1,14 +1,20 @@
 import logging
 import math
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import delete, insert
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, get_own_project
 from app.api.source_chunks import save_chunks
+from app.core import worker
 from app.core.database import SessionLocal, get_db
+from app.core.processing import (
+    mark_failed,
+    require_processing_slot,
+    still_processing,
+)
 from app.models.project import ProjectDB
 from app.models.source import SourceDB, SourceResponse, project_sources
 from app.models.source_segment import SourceSegmentDB
@@ -63,18 +69,6 @@ class YouTubeSourceCreate(BaseModel):
         return clean_short_text(value, "Title")
 
 
-def _fail(source_id: int, code: str) -> None:
-    db = SessionLocal()
-    try:
-        source = db.query(SourceDB).filter(SourceDB.id == source_id).first()
-        if source is not None:
-            source.status = "FAILED"
-            source.status_detail = code
-            db.commit()
-    finally:
-        db.close()
-
-
 def _clean_segments(
     segments: list[tuple[float, float, str]]
 ) -> list[tuple[float, float, str]]:
@@ -125,9 +119,17 @@ def _store_transcript(
 def process_youtube_source(source_id: int, video_id: str) -> None:
     """Fetch and store the transcript of a YouTube source.
 
-    Runs after the request has been answered. It always ends by setting
-    the source to READY, NEEDS_REVIEW or FAILED.
+    Runs in the background worker. It always ends by setting the source to
+    READY, NEEDS_REVIEW or FAILED.
     """
+    try:
+        _process_youtube_source(source_id, video_id)
+    except Exception:
+        logger.exception("Processing of YouTube source %s failed", source_id)
+        mark_failed(source_id, youtube.FETCH_FAILED)
+
+
+def _process_youtube_source(source_id: int, video_id: str) -> None:
     # Step 1: fetch the captions. No database connection is held meanwhile.
     try:
         transcript = youtube.fetch_youtube(video_id)
@@ -137,19 +139,15 @@ def process_youtube_source(source_id: int, video_id: str) -> None:
             raise youtube.YouTubeError(youtube.NO_TRANSCRIPT)
 
     except youtube.YouTubeError as error:
-        _fail(source_id, error.code)
-        return
-    except Exception:
-        logger.exception("Processing of YouTube source %s failed", source_id)
-        _fail(source_id, youtube.FETCH_FAILED)
+        mark_failed(source_id, error.code)
         return
 
-    # Step 2: store the result.
+    # Step 2: store the result, unless the source was deleted or finished
+    # by something else in the meantime.
     db = SessionLocal()
     try:
-        source = db.query(SourceDB).filter(SourceDB.id == source_id).first()
+        source = still_processing(db, source_id)
         if source is None:
-            # Deleted while it was being fetched.
             return
 
         _store_transcript(
@@ -159,11 +157,19 @@ def process_youtube_source(source_id: int, video_id: str) -> None:
 
     except Exception:
         db.rollback()
-        logger.exception("Storing the transcript of source %s failed", source_id)
-        _fail(source_id, youtube.FETCH_FAILED)
+        raise
 
     finally:
         db.close()
+
+
+def start_fetching(db: Session, source: SourceDB, video_id: str) -> None:
+    """Hand a YouTube source to the background worker."""
+    try:
+        worker.network.submit(process_youtube_source, source.id, video_id)
+    except worker.WorkerBusy:
+        mark_failed(source.id, youtube.SERVER_BUSY)
+        db.refresh(source)
 
 
 @router.post(
@@ -172,7 +178,6 @@ def process_youtube_source(source_id: int, video_id: str) -> None:
 )
 def add_youtube_source(
     data: YouTubeSourceCreate,
-    background_tasks: BackgroundTasks,
     project: ProjectDB = Depends(get_own_project),
     user: UserDB = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -207,6 +212,14 @@ def add_youtube_source(
                 detail="The transcript is empty"
             )
 
+    if segments is None:
+        require_processing_slot(db, user.id)
+        if not worker.network.has_room():
+            raise HTTPException(
+                status_code=503,
+                detail="The server is busy with other videos; try again later"
+            )
+
     source = SourceDB(
         user_id=user.id,
         title=data.title or f"YouTube video {video_id}",
@@ -233,6 +246,6 @@ def add_youtube_source(
     db.refresh(source)
 
     if segments is None:
-        background_tasks.add_task(process_youtube_source, source.id, video_id)
+        start_fetching(db, source, video_id)
 
     return source

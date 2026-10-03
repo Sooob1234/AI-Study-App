@@ -1,14 +1,17 @@
 import os
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.api.audio_upload import require_transcriber, start_processing
-from app.api.deps import get_own_source
-from app.api.youtube import process_youtube_source
+from app.api.deps import get_current_user, get_own_source
+from app.api.youtube import start_fetching
+from app.core import worker
 from app.core.config import to_disk_path
 from app.core.database import get_db
+from app.core.processing import claim_failed_source, require_processing_slot
 from app.models.source import SourceDB, SourceResponse
+from app.models.user import UserDB
 from app.services import youtube
 
 router = APIRouter(
@@ -16,10 +19,20 @@ router = APIRouter(
 )
 
 
+def _claim(db: Session, source: SourceDB) -> None:
+    """Take a failed source for processing, or refuse."""
+    if not claim_failed_source(db, source.id):
+        raise HTTPException(
+            status_code=400,
+            detail="Only a failed source can be retried"
+        )
+    db.refresh(source)
+
+
 @router.post("/sources/{source_id}/retry", response_model=SourceResponse)
 def retry_source(
-    background_tasks: BackgroundTasks,
     source: SourceDB = Depends(get_own_source),
+    user: UserDB = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Process a FAILED source again.
@@ -42,11 +55,8 @@ def retry_source(
                 detail="The stored file of this source is missing"
             )
 
-        source.status = "PROCESSING"
-        source.status_detail = None
-        db.commit()
-        db.refresh(source)
-
+        require_processing_slot(db, user.id)
+        _claim(db, source)
         start_processing(db, source)
         return source
 
@@ -58,12 +68,15 @@ def retry_source(
                 detail="This source has no valid YouTube link"
             )
 
-        source.status = "PROCESSING"
-        source.status_detail = None
-        db.commit()
-        db.refresh(source)
+        if not worker.network.has_room():
+            raise HTTPException(
+                status_code=503,
+                detail="The server is busy with other videos; try again later"
+            )
 
-        background_tasks.add_task(process_youtube_source, source.id, video_id)
+        require_processing_slot(db, user.id)
+        _claim(db, source)
+        start_fetching(db, source, video_id)
         return source
 
     raise HTTPException(

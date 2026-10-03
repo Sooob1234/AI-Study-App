@@ -35,7 +35,7 @@ Swagger UI: http://127.0.0.1:8000/docs
 | GET | `/projects/{id}/sources/` | List the sources of a project |
 | POST | `/projects/{id}/sources/pdf` | Upload a PDF (max 50 MB) |
 | POST | `/projects/{id}/sources/youtube` | Add a YouTube video by link |
-| POST | `/projects/{id}/sources/audio` | Upload an audio file (max 200 MB, 4 hours) |
+| POST | `/projects/{id}/sources/audio` | Upload an audio file (max 200 MB, 2 hours) |
 | POST | `/sources/{id}/retry` | Process a failed audio or YouTube source again |
 | GET | `/sources/{id}` | One source and its processing status |
 | GET | `/sources/{id}/pages/` | Extracted text, page by page |
@@ -82,8 +82,10 @@ upload → store file → source saved as `PROCESSING` and the request is
 answered → speech is written down in the background → clean text → timed
 segments → chunks with a time span → `READY`, or `FAILED` with a reason in
 `status_detail` (`NO_SPEECH`, `TRANSCRIPTION_FAILED`, `TRANSCRIBER_UNAVAILABLE`,
-`INTERRUPTED`, `SERVER_BUSY`). A failed audio source can be retried; its file
-is kept. Audio files are transcribed one at a time; at most 20 may wait.
+`INTERRUPTED`, `SERVER_BUSY`, `AUDIO_TOO_LONG`). A failed audio source can be
+retried; its file is kept. Audio files are transcribed one at a time, at most
+20 may wait, and one user may have at most 5 sources in processing at once.
+The length of a recording is measured from its sound, not read from its header.
 
 Speech is recognised on the server itself by the open Whisper model, so no
 outside service, account or payment is needed. This part is optional:

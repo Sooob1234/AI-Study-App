@@ -2,6 +2,7 @@ from fastapi import FastAPI
 
 from app.core.body_limit import BodySizeLimitMiddleware
 from app.core.limits import request_limit_for
+from app.core.upload_gate import refuse_before_reading
 
 from app.api.auth import router as auth_router
 from app.api.projects import router as projects_router
@@ -40,7 +41,11 @@ app = FastAPI(
 
 
 # A request larger than its path allows is refused while it is being read.
-app.add_middleware(BodySizeLimitMiddleware, limit_for=request_limit_for)
+app.add_middleware(
+    BodySizeLimitMiddleware,
+    limit_for=request_limit_for,
+    refuse_before_reading=refuse_before_reading,
+)
 
 app.include_router(auth_router)
 app.include_router(projects_router)
