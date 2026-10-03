@@ -6,6 +6,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.clock import utc_now
 from app.core.database import Base
+from app.models.validation import clean_short_text
 
 
 class ProjectDB(Base):
@@ -29,16 +30,13 @@ class ProjectDB(Base):
 
 
 class ProjectCreate(BaseModel):
-    # INPUT_VALIDATION_V1: a title must have 1 to 255 visible characters.
+    # INPUT_VALIDATION_V2: a title must have 1 to 255 visible characters.
     title: str = Field(max_length=255)
 
     @field_validator("title")
     @classmethod
-    def title_not_blank(cls, value: str) -> str:
-        value = value.strip()
-        if not value:
-            raise ValueError("Title must not be empty")
-        return value
+    def title_is_clean(cls, value: str) -> str:
+        return clean_short_text(value, "Title")
 
 
 class ProjectResponse(BaseModel):

@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, get_own_project
 from app.api.source_chunks import save_chunks
-from app.core.config import UPLOAD_ROOT
+from app.core.config import UPLOAD_ROOT, to_stored_path
 from app.core.database import get_db
 from app.models.project import ProjectDB
 from app.models.user import UserDB
@@ -32,6 +32,8 @@ MAX_PDF_SIZE_MB = 50
 MAX_PDF_SIZE_BYTES = MAX_PDF_SIZE_MB * 1024 * 1024
 # The title column holds at most this many characters.
 MAX_TITLE_CHARS = 255
+# A PDF with more pages than this is refused.
+MAX_PDF_PAGES = 2000
 _READ_BLOCK_BYTES = 1024 * 1024
 
 
@@ -105,11 +107,17 @@ def upload_pdf(
                 detail="Password-protected PDF files are not supported"
             )
 
+        if page_count > MAX_PDF_PAGES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"PDF has more than {MAX_PDF_PAGES} pages"
+            )
+
         source = SourceDB(
             user_id=user.id,
             title=filename[:MAX_TITLE_CHARS],
             source_type="PDF",
-            file_path=file_path,
+            file_path=to_stored_path(file_path),
             page_count=page_count,
             status="PROCESSING"
         )
@@ -127,7 +135,13 @@ def upload_pdf(
         page_texts = []
 
         for index, page in enumerate(reader.pages):
-            extracted_text = page.extract_text() or ""
+            try:
+                extracted_text = page.extract_text() or ""
+            except Exception:
+                # One unreadable page must not fail the whole file; it
+                # counts as a page without text for the quality check.
+                extracted_text = ""
+
             cleaned_text = clean_extracted_text(extracted_text)
             page_texts.append(cleaned_text)
 
