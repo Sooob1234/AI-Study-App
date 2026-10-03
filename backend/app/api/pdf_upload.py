@@ -6,6 +6,7 @@ from pypdf import PdfReader
 from sqlalchemy import insert
 from sqlalchemy.orm import Session
 
+from app.api.source_chunks import save_chunks
 from app.core.database import get_db
 from app.models.project import ProjectDB
 from app.models.source import SourceDB, SourceResponse, project_sources
@@ -102,6 +103,13 @@ async def upload_pdf(
             )
 
             db.add(page_record)
+
+        # Split the text into chunks that keep their page numbers and heading.
+        save_chunks(
+            db,
+            source.id,
+            [(index + 1, text) for index, text in enumerate(page_texts)]
+        )
 
         # READY only if the extracted text is usable; an empty or broken
         # text makes the source NEEDS_REVIEW instead.
