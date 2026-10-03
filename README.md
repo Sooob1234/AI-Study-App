@@ -4,8 +4,8 @@ Backend of a mobile AI study app: the user adds learning sources (PDF, YouTube,
 audio) to a project, picks a goal, and gets an output for that goal.
 
 Current state: projects, sources, PDF upload with page-by-page text extraction,
-Persian text clean-up, a quality check, chunking by heading, and user accounts.
-No AI yet.
+Persian text clean-up, a quality check, chunking by heading, audio sources with
+speech-to-text, and user accounts. No AI output generation yet.
 
 ## Run
 
@@ -34,6 +34,8 @@ Swagger UI: http://127.0.0.1:8000/docs
 | GET | `/projects/{id}` | One project |
 | GET | `/projects/{id}/sources/` | List the sources of a project |
 | POST | `/projects/{id}/sources/pdf` | Upload a PDF (max 50 MB) |
+| POST | `/projects/{id}/sources/audio` | Upload an audio file (max 200 MB, 4 hours) |
+| POST | `/sources/{id}/retry` | Process a failed audio source again |
 | GET | `/sources/{id}` | One source and its processing status |
 | GET | `/sources/{id}/pages/` | Extracted text, page by page |
 | GET | `/sources/{id}/chunks/` | Chunks with page numbers and heading |
@@ -48,6 +50,33 @@ the email (in the "username" box) and the password.
 
 Projects and sources made before accounts existed are given to the first
 account that registers.
+
+## Audio processing
+
+upload → store file → source saved as `PROCESSING` and the request is
+answered → speech is written down in the background → clean text → timed
+segments → chunks with a time span → `READY`, or `FAILED` with a reason in
+`status_detail` (`NO_SPEECH`, `TRANSCRIPTION_FAILED`, `TRANSCRIBER_UNAVAILABLE`,
+`INTERRUPTED`, `SERVER_BUSY`). A failed audio source can be retried; its file
+is kept. Audio files are transcribed one at a time; at most 20 may wait.
+
+Speech is recognised on the server itself by the open Whisper model, so no
+outside service, account or payment is needed. This part is optional:
+
+```bash
+pip install -r requirements-audio.txt
+```
+
+Without it the app runs and answers audio uploads with 503. The first audio
+file downloads the model (about 500 MB for the default `small`) from
+huggingface.co. `WHISPER_MODEL` in `.env` chooses the model: `tiny`, `base`,
+`small`, `medium`, `large-v3` (larger is more accurate and slower).
+
+Send the spoken language with the upload (`language=fa`). Without it the
+language is guessed, and a wrong guess gives a useless transcript.
+
+A source that was still `PROCESSING` when the app stopped is marked
+`FAILED / INTERRUPTED` at the next start.
 
 ## Database changes
 
@@ -85,3 +114,8 @@ create an empty database whose name contains `test` and point
 ```bash
 TEST_DATABASE_URL=postgresql+psycopg2://ai_study:ai_study_password@localhost:5433/ai_study_test python -m pytest
 ```
+
+The same checks run on GitHub on every push (`.github/workflows/tests.yml`).
+`live-checks.yml` runs the real speech recogniser on GitHub's servers; start it
+from the Actions tab.
+
