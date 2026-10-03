@@ -35,6 +35,12 @@ Swagger UI: http://127.0.0.1:8000/docs
 | POST | `/sources/{id}/chunks/` | Rebuild chunks from the saved pages |
 | DELETE | `/sources/{id}` | Delete a source with its pages, chunks and file |
 
+## Database changes
+
+The database structure is updated automatically when the app starts
+(`app/core/migrate.py`). Each change is a numbered file in
+`backend/app/migrations/versions`; existing data is kept.
+
 ## PDF processing
 
 upload → store file → extract text per page → clean text → chunk by heading →
