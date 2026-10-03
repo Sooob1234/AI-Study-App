@@ -11,6 +11,8 @@ from app.services.chunking import (
 )
 from app.services.quality_check import assess_extraction_quality
 from app.services.text_cleaning import clean_extracted_text
+from app.services import youtube
+from app.services.youtube import parse_video_id
 
 
 # --- text cleaning ---------------------------------------------------------
@@ -142,3 +144,79 @@ def test_time_chunks_keep_their_time_span():
 
 def test_no_segments_give_no_time_chunks():
     assert build_time_chunks([]) == []
+
+
+# --- YouTube links -----------------------------------------------------------
+
+def test_video_id_is_found_in_every_link_form():
+    video_id = "jNQXAC9IVRw"
+    links = [
+        f"https://www.youtube.com/watch?v={video_id}",
+        f"https://youtube.com/watch?v={video_id}&t=42s&list=PL123",
+        f"https://m.youtube.com/watch?feature=share&v={video_id}",
+        f"http://www.youtube.com/watch?v={video_id}",
+        f"www.youtube.com/watch?v={video_id}",
+        f"https://youtu.be/{video_id}",
+        f"https://youtu.be/{video_id}?si=abc&t=10",
+        f"https://www.youtube.com/shorts/{video_id}",
+        f"https://www.youtube.com/embed/{video_id}?start=3",
+        f"https://www.youtube.com/live/{video_id}",
+        f"  https://youtu.be/{video_id}  ",
+    ]
+    for link in links:
+        assert parse_video_id(link) == video_id, link
+
+
+def test_other_links_are_rejected():
+    links = [
+        "",
+        "   ",
+        "not a link",
+        "https://www.youtube.com/",
+        "https://www.youtube.com/watch",
+        "https://www.youtube.com/watch?v=short",
+        "https://www.youtube.com/watch?v=jNQXAC9IVRw-too-long",
+        "https://www.youtube.com/playlist?list=PL123",
+        "https://www.youtube.com/@channel",
+        "https://vimeo.com/123456789",
+        "https://evil.example/watch?v=jNQXAC9IVRw",
+        "https://youtube.com.evil.example/watch?v=jNQXAC9IVRw",
+        "javascript:alert(1)//youtu.be/jNQXAC9IVRw",
+        "ftp://youtu.be/jNQXAC9IVRw",
+    ]
+    for link in links:
+        assert parse_video_id(link) is None, link
+
+
+def test_every_youtube_request_has_a_time_limit(monkeypatch):
+    import requests
+
+    seen = {}
+
+    def fake_request(self, method, url, **kwargs):
+        seen.update(kwargs)
+        raise requests.ConnectionError("no network in tests")
+
+    monkeypatch.setattr(requests.Session, "request", fake_request)
+
+    try:
+        youtube._http_session().get("https://www.youtube.com/")
+    except requests.ConnectionError:
+        pass
+
+    assert seen["timeout"] == youtube.REQUEST_TIMEOUT_SECONDS
+
+
+def test_unreachable_youtube_is_reported_as_fetch_failed(monkeypatch):
+    import pytest
+    import requests
+
+    def fake_request(self, method, url, **kwargs):
+        raise requests.ConnectionError("no network in tests")
+
+    monkeypatch.setattr(requests.Session, "request", fake_request)
+
+    with pytest.raises(youtube.YouTubeError) as error:
+        youtube.fetch_youtube("jNQXAC9IVRw")
+
+    assert error.value.code == youtube.FETCH_FAILED

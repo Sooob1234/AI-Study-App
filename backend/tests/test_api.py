@@ -76,6 +76,7 @@ def test_everything_needs_a_login(client):
         ("get", "/projects/1/sources/"),
         ("post", "/projects/1/sources/"),
         ("post", "/projects/1/sources/pdf"),
+        ("post", "/projects/1/sources/youtube"),
         ("get", "/sources/1"),
         ("delete", "/sources/1"),
         ("get", "/sources/1/pages/"),
@@ -179,6 +180,7 @@ def test_manual_source_rules(client, new_user):
         return client.post(url, json=body, headers=headers)
 
     assert create(title="v", source_type="PDF").status_code == 400
+    assert create(title="v", source_type="YOUTUBE").status_code == 400
     assert create(title="v", source_type="WORD").status_code == 422
     assert create(title="v", source_type="AUDIO", duration=-1).status_code == 422
 
@@ -240,3 +242,143 @@ def test_users_cannot_reach_each_others_data(client, new_user):
     assert os.path.isfile(source["file_path"])
     listed = client.get(f"/projects/{project_id}/sources/", headers=owner).json()
     assert [item["id"] for item in listed] == [source_id]
+
+
+# --- YouTube ------------------------------------------------------------------
+# YouTube itself is replaced by a stand-in here, so these checks cover
+# everything except the real network call.
+
+VIDEO = "https://youtu.be/jNQXAC9IVRw"
+
+
+def _fake_youtube(monkeypatch, result):
+    from app.services import youtube
+
+    def fetch(video_id):
+        assert video_id == "jNQXAC9IVRw"
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(youtube, "fetch_youtube", fetch)
+
+
+def _add_video(client, headers, project_id, url=VIDEO):
+    return client.post(
+        f"/projects/{project_id}/sources/youtube",
+        json={"url": url},
+        headers=headers,
+    )
+
+
+def test_youtube_source_is_processed(client, new_user, monkeypatch):
+    from app.services.youtube import YouTubeTranscript
+
+    segments = [
+        (i * 5.0, i * 5.0 + 5.0, f"spoken sentence number {i} in the lecture " * 3)
+        for i in range(40)
+    ]
+    _fake_youtube(monkeypatch, YouTubeTranscript("A lecture", "en", segments))
+
+    headers, _ = new_user()
+    project_id = _project(client, headers)
+
+    response = _add_video(client, headers, project_id)
+    assert response.status_code == 200, response.text
+    created = response.json()
+    # The answer is sent before processing starts.
+    assert created["status"] == "PROCESSING"
+    assert created["url"] == "https://www.youtube.com/watch?v=jNQXAC9IVRw"
+
+    source = client.get(f"/sources/{created['id']}", headers=headers).json()
+    assert source["status"] == "READY"
+    assert source["status_detail"] is None
+    assert source["title"] == "A lecture"
+    assert source["duration"] == 200
+    assert source["source_type"] == "YOUTUBE"
+
+    stored = client.get(f"/sources/{created['id']}/segments/", headers=headers).json()
+    assert len(stored) == 40
+    assert (stored[1]["start_seconds"], stored[1]["end_seconds"]) == (5.0, 10.0)
+
+    chunks = client.get(f"/sources/{created['id']}/chunks/", headers=headers).json()
+    assert len(chunks) > 1
+    assert chunks[0]["start_seconds"] == 0.0
+    assert chunks[-1]["end_seconds"] == 200.0
+    assert chunks[0]["page_start"] is None
+
+    rebuilt = client.post(f"/sources/{created['id']}/chunks/", headers=headers)
+    assert rebuilt.json()["chunk_count"] == len(chunks)
+
+    assert client.get(f"/sources/{created['id']}/pages/", headers=headers).json() == []
+    assert client.delete(f"/sources/{created['id']}", headers=headers).status_code == 200
+
+
+def test_youtube_failures_are_reported(client, new_user, monkeypatch):
+    from app.services.youtube import YouTubeError, YouTubeTranscript
+
+    headers, _ = new_user()
+    project_id = _project(client, headers)
+
+    cases = [
+        (YouTubeError("NO_TRANSCRIPT"), "NO_TRANSCRIPT"),
+        (YouTubeError("BLOCKED_BY_YOUTUBE"), "BLOCKED_BY_YOUTUBE"),
+        (RuntimeError("anything unexpected"), "FETCH_FAILED"),
+        (YouTubeTranscript("Silent", "en", [(0.0, 2.0, "   ")]), "NO_TRANSCRIPT"),
+    ]
+
+    for result, code in cases:
+        _fake_youtube(monkeypatch, result)
+        created = _add_video(client, headers, project_id).json()
+        source = client.get(f"/sources/{created['id']}", headers=headers).json()
+
+        assert (source["status"], source["status_detail"]) == ("FAILED", code)
+        assert client.get(
+            f"/sources/{created['id']}/chunks/", headers=headers
+        ).json() == []
+
+
+def test_youtube_link_and_ownership_rules(client, new_user, monkeypatch):
+    from app.services.youtube import YouTubeError
+
+    _fake_youtube(monkeypatch, YouTubeError("NO_TRANSCRIPT"))
+    owner, _ = new_user()
+    stranger, _ = new_user()
+    project_id = _project(client, owner)
+
+    assert _add_video(client, owner, project_id, "https://vimeo.com/1").status_code == 400
+    assert _add_video(client, owner, project_id, "").status_code == 400
+    assert _add_video(client, stranger, project_id).status_code == 404
+    assert client.get(f"/projects/{project_id}/sources/", headers=owner).json() == []
+
+
+def test_video_cut_off_by_a_restart_is_marked_failed(client, new_user, monkeypatch):
+    from app.api.youtube import fail_interrupted_sources
+    from app.core.database import SessionLocal
+    from app.models.source import SourceDB
+    from app.services.youtube import YouTubeError
+
+    _fake_youtube(monkeypatch, YouTubeError("NO_TRANSCRIPT"))
+    headers, _ = new_user()
+    project_id = _project(client, headers)
+    video = _add_video(client, headers, project_id).json()
+    audio = client.post(
+        f"/projects/{project_id}/sources/",
+        json={"title": "v", "source_type": "AUDIO"},
+        headers=headers,
+    ).json()
+
+    # Put the video back to the state a restart would leave it in.
+    db = SessionLocal()
+    db.query(SourceDB).filter(SourceDB.id == video["id"]).update(
+        {"status": "PROCESSING", "status_detail": None}
+    )
+    db.commit()
+    db.close()
+
+    assert fail_interrupted_sources() == 1
+
+    after = client.get(f"/sources/{video['id']}", headers=headers).json()
+    assert (after["status"], after["status_detail"]) == ("FAILED", "INTERRUPTED")
+    untouched = client.get(f"/sources/{audio['id']}", headers=headers).json()
+    assert untouched["status"] == "PROCESSING"

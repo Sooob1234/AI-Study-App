@@ -34,6 +34,7 @@ Swagger UI: http://127.0.0.1:8000/docs
 | GET | `/projects/{id}` | One project |
 | GET / POST | `/projects/{id}/sources/` | List sources / add a non-PDF source |
 | POST | `/projects/{id}/sources/pdf` | Upload a PDF (max 50 MB) |
+| POST | `/projects/{id}/sources/youtube` | Add a YouTube video by link |
 | GET | `/sources/{id}` | One source and its processing status |
 | GET | `/sources/{id}/pages/` | Extracted text, page by page |
 | GET | `/sources/{id}/chunks/` | Chunks with page numbers and heading |
@@ -48,6 +49,17 @@ the email (in the "username" box) and the password.
 
 Projects and sources made before accounts existed are given to the first
 account that registers.
+
+## YouTube processing
+
+link → source saved as `PROCESSING` and the request is answered → captions
+fetched in the background → clean text → timed segments → chunks with a time
+span → `READY`, or `FAILED` with a reason in `status_detail`
+(`NO_TRANSCRIPT`, `VIDEO_UNAVAILABLE`, `BLOCKED_BY_YOUTUBE`, `FETCH_FAILED`,
+`INTERRUPTED`).
+
+Only videos that already have captions can be processed; there is no
+speech-to-text yet. The server must be able to reach youtube.com.
 
 ## Database changes
 

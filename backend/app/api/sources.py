@@ -37,6 +37,12 @@ def create_source(
             detail="PDF sources are added with the PDF upload endpoint"
         )
 
+    if data.source_type.value == "YOUTUBE":
+        raise HTTPException(
+            status_code=400,
+            detail="YouTube sources are added with the YouTube endpoint"
+        )
+
     source = SourceDB(
         user_id=user.id,
         title=data.title,
