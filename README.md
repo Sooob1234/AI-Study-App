@@ -33,6 +33,7 @@ Swagger UI: http://127.0.0.1:8000/docs
 | GET | `/sources/{id}/pages/` | Extracted text, page by page |
 | GET | `/sources/{id}/chunks/` | Chunks with page numbers and heading |
 | POST | `/sources/{id}/chunks/` | Rebuild chunks from the saved pages |
+| DELETE | `/sources/{id}` | Delete a source with its pages, chunks and file |
 
 ## PDF processing
 
