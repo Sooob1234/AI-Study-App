@@ -725,3 +725,94 @@ def test_audio_is_refused_while_the_waiting_line_is_full(client, new_user, monke
 
     assert _upload_audio(client, headers, project_id).status_code == 503
     assert set(os.listdir(folder)) == before
+
+
+def test_youtube_transcript_sent_by_the_app_needs_no_fetch(client, new_user, monkeypatch):
+    from app.services import youtube
+
+    def must_not_be_called(video_id):
+        raise AssertionError("the server contacted YouTube")
+
+    monkeypatch.setattr(youtube, "fetch_youtube", must_not_be_called)
+
+    headers, _ = new_user()
+    project_id = _project(client, headers)
+    sentence = "در این بخش درباره تاریخ ایران و اهمیت آن برای دانشجویان صحبت می شود "
+    # Sent out of order on purpose; the server puts them in time order.
+    segments = [
+        {"start": i * 6.0, "duration": 6.0, "text": sentence * 2}
+        for i in reversed(range(30))
+    ] + [{"start": 500.0, "duration": 1.0, "text": "   "}]
+
+    response = client.post(
+        f"/projects/{project_id}/sources/youtube",
+        json={
+            "url": VIDEO,
+            "title": "  درس تاریخ  ",
+            "language": "FA",
+            "segments": segments,
+        },
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+    source = response.json()
+    # The answer already carries the final result.
+    assert (source["status"], source["status_detail"]) == ("READY", None)
+    assert (source["title"], source["language"], source["duration"]) == ("درس تاریخ", "fa", 180)
+
+    stored = client.get(f"/sources/{source['id']}/segments/", headers=headers).json()
+    assert [s["start_seconds"] for s in stored] == [i * 6.0 for i in range(30)]
+
+    chunks = client.get(f"/sources/{source['id']}/chunks/", headers=headers).json()
+    assert len(chunks) > 1
+    assert (chunks[0]["start_seconds"], chunks[-1]["end_seconds"]) == (0.0, 180.0)
+
+
+def test_youtube_transcript_sent_by_the_app_is_validated(client, new_user, monkeypatch):
+    from app.services.youtube import YouTubeError
+
+    _fake_youtube(monkeypatch, YouTubeError("NO_TRANSCRIPT"))
+    headers, _ = new_user()
+    project_id = _project(client, headers)
+
+    def add(**body):
+        body.setdefault("url", VIDEO)
+        return client.post(
+            f"/projects/{project_id}/sources/youtube", json=body, headers=headers
+        ).status_code
+
+    ok = {"start": 0, "duration": 2, "text": "hello"}
+    assert add(segments=[]) == 400
+    assert add(segments=[{"start": 0, "duration": 2, "text": "  "}]) == 400
+    assert add(segments=[{**ok, "start": -1}]) == 422
+    assert add(segments=[{**ok, "duration": -1}]) == 422
+    assert add(segments=[{**ok, "text": "x" * 2001}]) == 422
+    assert add(segments=[{"start": 0, "text": "no duration"}]) == 422
+    assert add(segments=[ok], language="persian language") == 422
+    assert add(segments=[ok], title="a\u0000b") == 422
+    assert add(segments=[ok], url="https://vimeo.com/1") == 400
+    assert add(segments=[ok] * 20001) == 422
+
+    # None of the refused requests left a source behind.
+    assert client.get(f"/projects/{project_id}/sources/", headers=headers).json() == []
+
+
+def test_failed_youtube_source_can_be_retried(client, new_user, monkeypatch):
+    from app.services.youtube import YouTubeError, YouTubeTranscript
+
+    headers, _ = new_user()
+    project_id = _project(client, headers)
+
+    _fake_youtube(monkeypatch, YouTubeError("BLOCKED_BY_YOUTUBE"))
+    created = _add_video(client, headers, project_id).json()
+    source = client.get(f"/sources/{created['id']}", headers=headers).json()
+    assert (source["status"], source["status_detail"]) == ("FAILED", "BLOCKED_BY_YOUTUBE")
+
+    text = "a sentence spoken in the lecture about the topic " * 3
+    _fake_youtube(monkeypatch, YouTubeTranscript("Lecture", "en", [(0.0, 5.0, text)]))
+    retried = client.post(f"/sources/{created['id']}/retry", headers=headers)
+    assert (retried.status_code, retried.json()["status"]) == (200, "PROCESSING")
+
+    source = client.get(f"/sources/{created['id']}", headers=headers).json()
+    assert (source["status"], source["title"]) == ("READY", "Lecture")
+    assert client.post(f"/sources/{created['id']}/retry", headers=headers).status_code == 400

@@ -36,7 +36,7 @@ Swagger UI: http://127.0.0.1:8000/docs
 | POST | `/projects/{id}/sources/pdf` | Upload a PDF (max 50 MB) |
 | POST | `/projects/{id}/sources/youtube` | Add a YouTube video by link |
 | POST | `/projects/{id}/sources/audio` | Upload an audio file (max 200 MB, 4 hours) |
-| POST | `/sources/{id}/retry` | Process a failed audio source again |
+| POST | `/sources/{id}/retry` | Process a failed audio or YouTube source again |
 | GET | `/sources/{id}` | One source and its processing status |
 | GET | `/sources/{id}/pages/` | Extracted text, page by page |
 | GET | `/sources/{id}/chunks/` | Chunks with page numbers and heading |
@@ -54,14 +54,28 @@ account that registers.
 
 ## YouTube processing
 
-link → source saved as `PROCESSING` and the request is answered → captions
-fetched in the background → clean text → timed segments → chunks with a time
-span → `READY`, or `FAILED` with a reason in `status_detail`
-(`NO_TRANSCRIPT`, `VIDEO_UNAVAILABLE`, `BLOCKED_BY_YOUTUBE`, `FETCH_FAILED`,
-`INTERRUPTED`).
+A YouTube source can be added in two ways.
 
-Only videos that already have captions can be processed; there is no
-speech-to-text yet. The server must be able to reach youtube.com.
+1. **The app sends the captions.** `POST /projects/{id}/sources/youtube` with
+   `url` and `segments` (`start`, `duration`, `text`), optionally `title` and
+   `language`. The server does not contact YouTube and answers with the final
+   status. This works wherever the server is hosted.
+2. **The server fetches the captions.** Only `url` is sent. The source is saved
+   as `PROCESSING`, the request is answered, and the captions are fetched in
+   the background.
+
+Either way: clean text → timed segments → chunks with a time span → `READY`,
+or `FAILED` with a reason in `status_detail` (`NO_TRANSCRIPT`,
+`VIDEO_UNAVAILABLE`, `BLOCKED_BY_YOUTUBE`, `FETCH_FAILED`, `INTERRUPTED`). A
+failed YouTube source can be retried.
+
+**YouTube refuses requests from data-centre addresses.** Checked from GitHub's
+servers: both the captions and the audio of ordinary public videos were
+refused (`BLOCKED_BY_YOUTUBE`, "Sign in to confirm you're not a bot"). A server
+in a data centre can therefore use way 2 only through a proxy with a
+home-connection address, set in `.env` as `YOUTUBE_PROXY_URL`. Way 1 needs no
+proxy. Videos without captions cannot be processed yet.
+
 ## Audio processing
 
 upload → store file → source saved as `PROCESSING` and the request is
@@ -127,6 +141,6 @@ TEST_DATABASE_URL=postgresql+psycopg2://ai_study:ai_study_password@localhost:543
 ```
 
 The same checks run on GitHub on every push (`.github/workflows/tests.yml`).
-`live-checks.yml` runs the real speech recogniser on GitHub's servers; start it
-from the Actions tab.
+`live-checks.yml` runs the real speech recogniser and a real YouTube check on
+GitHub's servers; start it from the Actions tab.
 

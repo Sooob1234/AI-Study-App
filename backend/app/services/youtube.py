@@ -7,6 +7,7 @@ Two parts:
   processed until speech-to-text is added.
 """
 
+import os
 import re
 from dataclasses import dataclass
 from urllib.parse import parse_qs, urlparse
@@ -92,7 +93,26 @@ def _http_session():
             kwargs.setdefault("timeout", REQUEST_TIMEOUT_SECONDS)
             return super().request(*args, **kwargs)
 
-    return TimeoutSession()
+    session = TimeoutSession()
+
+    proxies = _proxies()
+    if proxies:
+        session.proxies.update(proxies)
+
+    return session
+
+
+def _proxies() -> dict[str, str] | None:
+    """The proxy to reach YouTube through, if YOUTUBE_PROXY_URL is set.
+
+    YouTube refuses caption requests from most data-centre addresses. A
+    server in a data centre therefore needs a proxy with a home-connection
+    address (a "residential" proxy) to fetch captions itself.
+    """
+    url = (os.getenv("YOUTUBE_PROXY_URL") or "").strip()
+    if not url:
+        return None
+    return {"http": url, "https": url}
 
 
 def _fetch_title(video_id: str) -> str | None:

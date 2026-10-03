@@ -14,7 +14,7 @@ from fastapi import (
 from sqlalchemy import delete, insert
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user, get_own_project, get_own_source
+from app.api.deps import get_current_user, get_own_project
 from app.api.source_chunks import save_chunks
 from app.core import worker
 from app.core.config import UPLOAD_ROOT, to_disk_path, to_stored_path
@@ -167,7 +167,7 @@ def process_audio_source(source_id: int) -> None:
         db.close()
 
 
-def _require_transcriber() -> None:
+def require_transcriber() -> None:
     if not transcription.is_available():
         raise HTTPException(
             status_code=503,
@@ -181,7 +181,7 @@ def _require_transcriber() -> None:
         )
 
 
-def _start_processing(db: Session, source: SourceDB) -> None:
+def start_processing(db: Session, source: SourceDB) -> None:
     """Hand a source to the background worker."""
     try:
         worker.submit(process_audio_source, source.id)
@@ -209,7 +209,7 @@ def upload_audio(
     `language` is the language spoken in the recording, as a code such as
     "fa" or "en". It is optional, but giving it avoids a wrong guess.
     """
-    _require_transcriber()
+    require_transcriber()
 
     language = (language or "").strip().lower() or None
     if language is not None and language not in transcription.supported_languages():
@@ -284,42 +284,6 @@ def upload_audio(
             detail="Audio upload failed"
         )
 
-    _start_processing(db, source)
-
-    return source
-
-
-@router.post("/sources/{source_id}/retry", response_model=SourceResponse)
-def retry_source(
-    source: SourceDB = Depends(get_own_source),
-    db: Session = Depends(get_db)
-):
-    """Process a FAILED audio source again, from the file already stored."""
-    if source.source_type != "AUDIO" or not source.file_path:
-        raise HTTPException(
-            status_code=400,
-            detail="Only audio sources can be retried"
-        )
-
-    if source.status != "FAILED":
-        raise HTTPException(
-            status_code=400,
-            detail="Only a failed source can be retried"
-        )
-
-    _require_transcriber()
-
-    if not os.path.isfile(to_disk_path(source.file_path)):
-        raise HTTPException(
-            status_code=400,
-            detail="The stored file of this source is missing"
-        )
-
-    source.status = "PROCESSING"
-    source.status_detail = None
-    db.commit()
-    db.refresh(source)
-
-    _start_processing(db, source)
+    start_processing(db, source)
 
     return source

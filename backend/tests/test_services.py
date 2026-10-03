@@ -474,3 +474,14 @@ def test_a_full_waiting_line_refuses_new_jobs(monkeypatch):
     release.set()
     worker._jobs.join()
     assert worker.has_room()
+
+
+def test_youtube_requests_go_through_the_proxy_when_one_is_set(monkeypatch):
+    monkeypatch.delenv("YOUTUBE_PROXY_URL", raising=False)
+    assert youtube._http_session().proxies == {}
+
+    monkeypatch.setenv("YOUTUBE_PROXY_URL", " http://user:pass@proxy.example:8080 ")
+    assert youtube._http_session().proxies == {
+        "http": "http://user:pass@proxy.example:8080",
+        "https": "http://user:pass@proxy.example:8080",
+    }

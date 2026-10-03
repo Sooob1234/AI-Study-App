@@ -9,6 +9,7 @@ from app.api.sources import router as sources_router
 from app.api.pdf_upload import router as pdf_upload_router
 from app.api.youtube import router as youtube_router
 from app.api.audio_upload import router as audio_upload_router
+from app.api.source_retry import router as source_retry_router
 from app.api.source_pages import router as source_pages_router
 from app.api.source_chunks import router as source_chunks_router
 from app.api.source_segments import router as source_segments_router
@@ -47,6 +48,7 @@ app.include_router(sources_router)
 app.include_router(pdf_upload_router)
 app.include_router(youtube_router)
 app.include_router(audio_upload_router)
+app.include_router(source_retry_router)
 app.include_router(source_pages_router)
 app.include_router(source_chunks_router)
 app.include_router(source_segments_router)
