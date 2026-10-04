@@ -149,16 +149,28 @@ The app speaks the OpenAI-compatible chat format, so the model is chosen in
 | Setting | Default | Meaning |
 |---|---|---|
 | `AI_BASE_URL` | `http://127.0.0.1:11434/v1` | where the model is served (Ollama on this computer) |
-| `AI_MODEL` | `gemma3:12b` | which model |
+| `AI_MODEL` | `gemma3:4b` | which model |
 | `AI_API_KEY` | empty | key for a hosted service |
 | `AI_MAX_INPUT_CHARS` | `3000` | how much text the model is given at once |
 | `AI_TIMEOUT_SECONDS` | `600` | how long to wait for one answer |
 | `AI_MAX_OUTPUT_TOKENS` | `2000` | the longest answer the model may give |
 
 By default an open model runs on the computer itself through
-[Ollama](https://ollama.com): install Ollama, then `ollama pull gemma3:12b`.
-No account or payment is needed. On a processor without a graphics card one
-part takes about a minute and a half, so a long document takes a long time.
+[Ollama](https://ollama.com): install Ollama, then `ollama pull gemma3:4b`.
+No account or payment is needed.
+
+Measured on GitHub's 4-core servers, without a graphics card, on a Persian
+study text (through the app, `live-checks.yml`):
+
+| Model | Download | Time per part | Result |
+|---|---|---|---|
+| `gemma3:4b` (default) | 3.3 GB | about 40 s | usable; wording sometimes a little loose |
+| `qwen2.5:7b` | 4.7 GB | about 100 s | usable |
+| `gemma3:12b` | 8.1 GB | about 110 s | the most careful of the three |
+
+A long document has dozens of parts, so on such a processor a summary takes
+tens of minutes. The licence terms of the chosen model must be checked before
+commercial use.
 
 ## Database changes
 

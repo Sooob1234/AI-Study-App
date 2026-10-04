@@ -39,7 +39,11 @@ def base_url() -> str:
 
 
 def model_name() -> str:
-    return os.getenv("AI_MODEL") or "gemma3:12b"
+    # Three open models were run through the app on a Persian study text.
+    # All gave usable summaries. gemma3:4b is the default because it is
+    # about three times faster than gemma3:12b on an ordinary processor and
+    # needs far less memory; gemma3:12b writes a little more carefully.
+    return os.getenv("AI_MODEL") or "gemma3:4b"
 
 
 def _timeout() -> float:
