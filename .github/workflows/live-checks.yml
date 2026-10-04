@@ -8,6 +8,7 @@ on:
     branches:
       - audio-source
       - youtube-source
+      - summaries
       - "live/**"
 
 permissions:
@@ -74,3 +75,44 @@ jobs:
       - run: pip install -r requirements.txt -r requirements-dev.txt
       - name: Real YouTube through the app
         run: python -m scripts.live_check_youtube
+
+  summary:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        model: ["gemma3:12b", "gemma3:4b", "qwen2.5:7b"]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ai_study
+          POSTGRES_PASSWORD: ai_study_password
+          POSTGRES_DB: ai_study_live
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U ai_study"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      DATABASE_URL: postgresql+psycopg2://ai_study:ai_study_password@localhost:5433/ai_study_live
+      AI_MODEL: ${{ matrix.model }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -r requirements.txt -r requirements-dev.txt
+      - name: Install Ollama and the model
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          sleep 5
+          for attempt in 1 2 3; do ollama pull "$AI_MODEL" && break; sleep 20; done
+          ollama list
+      - name: Real summary through the app
+        run: python -m scripts.live_check_summary

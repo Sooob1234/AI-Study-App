@@ -15,6 +15,7 @@ from app.api.source_retry import router as source_retry_router
 from app.api.source_pages import router as source_pages_router
 from app.api.source_chunks import router as source_chunks_router
 from app.api.source_segments import router as source_segments_router
+from app.api.outputs import router as outputs_router
 
 from app.core.migrate import run_migrations
 from app.core.recovery import fail_interrupted_sources
@@ -25,6 +26,7 @@ from app.models.source import SourceDB, project_sources
 from app.models.source_page import SourcePageDB
 from app.models.source_chunk import SourceChunkDB
 from app.models.source_segment import SourceSegmentDB
+from app.models.output import OutputDB
 
 
 # Creates missing tables and applies any new change to the database
@@ -59,6 +61,7 @@ app.include_router(source_retry_router)
 app.include_router(source_pages_router)
 app.include_router(source_chunks_router)
 app.include_router(source_segments_router)
+app.include_router(outputs_router)
 
 
 @app.get("/")

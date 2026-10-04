@@ -5,7 +5,7 @@ audio) to a project, picks a goal, and gets an output for that goal.
 
 Current state: projects, sources, PDF upload with page-by-page text extraction,
 Persian text clean-up, a quality check, chunking by heading, audio sources with
-speech-to-text, and user accounts. No AI output generation yet.
+speech-to-text, user accounts, and AI summaries.
 
 ## Run
 
@@ -46,6 +46,9 @@ http://127.0.0.1:8000/prototype
 | GET | `/sources/{id}/segments/` | Timed transcript of a video or audio source |
 | POST | `/sources/{id}/chunks/` | Rebuild chunks from the saved pages |
 | DELETE | `/sources/{id}` | Delete a source with its pages, chunks and file |
+| POST / GET | `/projects/{id}/outputs/` | Ask for a summary / list the outputs of a project |
+| GET / DELETE | `/outputs/{id}` | One output with its content / delete it |
+| GET | `/ai/status` | Which AI model is set, and whether it answers |
 
 All endpoints except register and login need a login, and every user sees
 only their own projects and sources. In Swagger: create an account with
@@ -110,6 +113,47 @@ language is guessed, and a wrong guess gives a useless transcript.
 A source that was still `PROCESSING` when the app stopped is marked
 `FAILED / INTERRUPTED` at the next start.
 
+## AI outputs (Phase 2: summaries)
+
+`POST /projects/{id}/outputs/` with `goal_type: "SUMMARY"`, one `source_ids`
+entry and a `mode` (`SOURCE_ONLY` or `SOURCE_PLUS_AI`). The output is saved as
+`PROCESSING` and made in the background; `GET /outputs/{id}` gives the progress
+and, when `READY`, the `content`:
+
+- `overview`: a few sentences about the whole source;
+- `outline`: the tree of headings, built by the program from the chunks;
+- `sections`: per chapter, the key points, tables and warnings, each with the
+  page (or time) it comes from; in `SOURCE_PLUS_AI` mode also `ai_notes`,
+  kept apart and labelled;
+- `coverage`: for every chapter, how many of its parts were summarised.
+
+Every part of the source is given to the model, so nothing is skipped by
+design; a part the model fails on twice is shown in `coverage` and the output
+becomes `NEEDS_REVIEW / INCOMPLETE`. A failed output says why in
+`status_detail` (`AI_UNAVAILABLE`, `AI_MODEL_MISSING`, `AI_FAILED`,
+`AI_BAD_ANSWER`, `INTERRUPTED`).
+
+The AI code lives in `app/ai` and reads only chunks; it is separate from
+source processing in `app/services`.
+
+### The model
+
+The app speaks the OpenAI-compatible chat format, so the model is chosen in
+`.env` without changing code:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `AI_BASE_URL` | `http://127.0.0.1:11434/v1` | where the model is served (Ollama on this computer) |
+| `AI_MODEL` | `gemma3:12b` | which model |
+| `AI_API_KEY` | empty | key for a hosted service |
+| `AI_MAX_INPUT_CHARS` | `3000` | how much text the model is given at once |
+| `AI_TIMEOUT_SECONDS` | `900` | how long to wait for one answer |
+
+By default an open model runs on the computer itself through
+[Ollama](https://ollama.com): install Ollama, then `ollama pull gemma3:12b`.
+No account or payment is needed. On a processor without a graphics card one
+part takes about a minute and a half, so a long document takes a long time.
+
 ## Database changes
 
 The database structure is updated automatically when the app starts
@@ -128,8 +172,8 @@ Known limits of the extracted text: half-spaces are lost, tables become
 consecutive lines, highlights are lost, and there is no OCR. Headings are
 recognised only when they are numbered (`3-`, `3 -2-`).
 
-Source processing (`app/services`) is kept separate from AI output generation,
-which is not built yet.
+Source processing (`app/services`) is kept separate from AI output generation
+(`app/ai`).
 
 ## Checks
 

@@ -654,7 +654,7 @@ def test_source_cut_off_by_a_restart_is_marked_failed(client, new_user, monkeypa
     db.commit()
     db.close()
 
-    assert fail_interrupted_sources() == 1
+    assert fail_interrupted_sources() >= 1
 
     after = client.get(f"/sources/{audio['id']}", headers=headers).json()
     assert (after["status"], after["status_detail"]) == ("FAILED", "INTERRUPTED")
@@ -1034,3 +1034,222 @@ def test_the_prototype_page_is_served_without_login(client):
     assert 'dir="rtl"' in response.text
     # It is a test tool, not part of the documented interface.
     assert "/prototype" not in client.get("/openapi.json").json()["paths"]
+
+
+# --- AI outputs -----------------------------------------------------------------
+# The model is replaced by a stand-in; everything around it is real.
+
+def _fake_model(monkeypatch, answer=None):
+    from app.ai import llm
+
+    calls = []
+
+    def chat_json(system, user):
+        calls.append((system, user))
+        result = answer(system, user) if callable(answer) else answer
+        if isinstance(result, Exception):
+            raise result
+        if result is not None:
+            return result
+        if '"overview"' in system:
+            return {"overview": "This source has two chapters."}
+        return {
+            "title": "A title",
+            "key_points": [{"text": "The main point of this part.", "part": 1}],
+            "tables": [{"title": "Compare", "columns": ["a", "b"], "rows": [["1", "2"]], "part": 1}],
+            "warnings": [{"text": "Mind this.", "part": 1}],
+        }
+
+    monkeypatch.setattr(llm, "chat_json", chat_json)
+    return calls
+
+
+def _summarise(client, headers, project_id, source_id, **changes):
+    body = {"goal_type": "SUMMARY", "source_ids": [source_id]}
+    body.update(changes)
+    return client.post(f"/projects/{project_id}/outputs/", json=body, headers=headers)
+
+
+def test_summary_of_a_pdf_is_made_and_stored(client, new_user, monkeypatch):
+    calls = _fake_model(monkeypatch)
+    headers, _ = new_user()
+    project_id = _project(client, headers)
+    source = _upload(client, headers, project_id).json()
+
+    response = _summarise(client, headers, project_id, source["id"])
+    assert response.status_code == 200, response.text
+    created = response.json()
+    assert created["source_ids"] == [source["id"]]
+    assert created["title"] == "خلاصه: notes.pdf"
+    assert "content" not in created
+
+    output = client.get(f"/outputs/{created['id']}", headers=headers).json()
+    assert (output["status"], output["status_detail"]) == ("READY", None)
+    assert (output["progress_done"], output["progress_total"]) == (2, 2)
+    assert (output["goal_type"], output["scope_type"], output["mode"]) == (
+        "SUMMARY", "ONE_SOURCE", "SOURCE_ONLY"
+    )
+
+    content = output["content"]
+    assert content["overview"] == "This source has two chapters."
+    assert [node["title"] for node in content["outline"]] == [
+        "1- First chapter", "2- Second chapter"
+    ]
+    assert content["outline"][1]["children"][0]["title"] == "2 -1 - A section"
+    assert [s["title"] for s in content["sections"]] == [
+        "1- First chapter", "2- Second chapter"
+    ]
+    assert content["sections"][1]["key_points"][0]["ref"] == {"page_start": 2, "page_end": 2}
+    assert all(item["status"] == "COMPLETE" for item in content["coverage"])
+    # The text of the source really reached the model.
+    assert "A0" in calls[0][1] and "B7" in calls[1][1]
+
+    listed = client.get(f"/projects/{project_id}/outputs/", headers=headers).json()
+    assert [(item["id"], "content" in item) for item in listed] == [(created["id"], False)]
+
+    # Deleting the source takes the outputs made only from it along? No:
+    # the output stays, without that source in its list.
+    assert client.delete(f"/outputs/{created['id']}", headers=headers).status_code == 200
+    assert client.get(f"/outputs/{created['id']}", headers=headers).status_code == 404
+    assert client.get(f"/projects/{project_id}/outputs/", headers=headers).json() == []
+
+
+def test_summary_failures_are_reported(client, new_user, monkeypatch):
+    from app.ai.llm import LLMError
+
+    headers, _ = new_user()
+    project_id = _project(client, headers)
+    source = _upload(client, headers, project_id).json()
+
+    for error, code in (
+        (LLMError("AI_UNAVAILABLE"), "AI_UNAVAILABLE"),
+        (LLMError("AI_MODEL_MISSING"), "AI_MODEL_MISSING"),
+        (RuntimeError("anything unexpected"), "AI_FAILED"),
+    ):
+        _fake_model(monkeypatch, error)
+        created = _summarise(client, headers, project_id, source["id"]).json()
+        output = client.get(f"/outputs/{created['id']}", headers=headers).json()
+        assert (output["status"], output["status_detail"], output["content"]) == (
+            "FAILED", code, None
+        )
+
+
+def test_output_request_rules(client, new_user, monkeypatch):
+    calls = _fake_model(monkeypatch)
+    headers, _ = new_user()
+    project_id = _project(client, headers)
+    other_project = _project(client, headers, "Other")
+    ready = _upload(client, headers, project_id).json()
+    blank = _upload(client, headers, project_id, BLANK_PDF).json()
+    elsewhere = _upload(client, headers, other_project).json()
+
+    def status(**body):
+        return client.post(
+            f"/projects/{project_id}/outputs/", json=body, headers=headers
+        ).status_code
+
+    one = {"goal_type": "SUMMARY", "source_ids": [ready["id"]]}
+    assert status(goal_type="QUIZ", source_ids=[ready["id"]]) == 400
+    assert status(goal_type="POEM", source_ids=[ready["id"]]) == 422
+    assert status(goal_type="SUMMARY", source_ids=[]) == 422
+    assert status(goal_type="SUMMARY", source_ids=[ready["id"], blank["id"]]) == 400
+    assert status(**one, scope_type="ALL_SOURCES") == 400
+    assert status(**one, mode="WEB_SEARCH") == 422
+    assert status(goal_type="SUMMARY", source_ids=[blank["id"]]) == 400      # NEEDS_REVIEW
+    assert status(goal_type="SUMMARY", source_ids=[elsewhere["id"]]) == 404  # other project
+    assert status(goal_type="SUMMARY", source_ids=[999999999]) == 404
+    assert status(goal_type="SUMMARY", source_ids=[99999999999999999999]) == 422
+    assert calls == []
+
+    assert status(**one, mode="SOURCE_PLUS_AI") == 200
+    assert "ai_notes" in calls[0][0]
+
+
+def test_outputs_belong_to_their_owner(client, new_user, monkeypatch):
+    _fake_model(monkeypatch)
+    owner, _ = new_user()
+    stranger, _ = new_user()
+    project_id = _project(client, owner)
+    source = _upload(client, owner, project_id).json()
+    output = _summarise(client, owner, project_id, source["id"]).json()
+
+    blocked = [
+        _summarise(client, stranger, project_id, source["id"]),
+        _summarise(client, stranger, _project(client, stranger), source["id"]),
+        client.get(f"/projects/{project_id}/outputs/", headers=stranger),
+        client.get(f"/outputs/{output['id']}", headers=stranger),
+        client.delete(f"/outputs/{output['id']}", headers=stranger),
+    ]
+    assert [response.status_code for response in blocked] == [404] * len(blocked)
+    assert client.get(f"/outputs/{output['id']}", headers=owner).status_code == 200
+
+    for method, path in (
+        ("post", f"/projects/{project_id}/outputs/"),
+        ("get", f"/projects/{project_id}/outputs/"),
+        ("get", f"/outputs/{output['id']}"),
+        ("delete", f"/outputs/{output['id']}"),
+        ("get", "/ai/status"),
+    ):
+        assert getattr(client, method)(path).status_code == 401, path
+
+
+def test_one_output_at_a_time_and_restart_recovery(client, new_user, monkeypatch):
+    from app.core.database import SessionLocal
+    from app.core.recovery import fail_interrupted_sources
+    from app.models.output import OutputDB
+
+    _fake_model(monkeypatch)
+    headers, _ = new_user()
+    project_id = _project(client, headers)
+    source = _upload(client, headers, project_id).json()
+    output = _summarise(client, headers, project_id, source["id"]).json()
+
+    # Put it back to the state a restart would leave it in.
+    db = SessionLocal()
+    db.query(OutputDB).filter(OutputDB.id == output["id"]).update(
+        {"status": "PROCESSING", "status_detail": None}
+    )
+    db.commit()
+    db.close()
+
+    assert _summarise(client, headers, project_id, source["id"]).status_code == 429
+
+    assert fail_interrupted_sources() >= 1
+    after = client.get(f"/outputs/{output['id']}", headers=headers).json()
+    assert (after["status"], after["status_detail"]) == ("FAILED", "INTERRUPTED")
+    assert _summarise(client, headers, project_id, source["id"]).status_code == 200
+
+
+def test_output_deleted_while_it_is_being_made(client, new_user, monkeypatch):
+    headers, _ = new_user()
+    project_id = _project(client, headers)
+    source = _upload(client, headers, project_id).json()
+    state = {"calls": 0}
+
+    def deleting(system, user):
+        state["calls"] += 1
+        if state["calls"] == 1:
+            listed = client.get(f"/projects/{project_id}/outputs/", headers=headers).json()
+            state["id"] = listed[0]["id"]
+            assert listed[0]["status"] == "PROCESSING"
+            client.delete(f"/outputs/{state['id']}", headers=headers)
+        return {"key_points": [{"text": "A point.", "part": 1}]}
+
+    _fake_model(monkeypatch, deleting)
+    assert _summarise(client, headers, project_id, source["id"]).status_code == 200
+
+    assert client.get(f"/outputs/{state['id']}", headers=headers).status_code == 404
+    # The run stopped after the part during which the output was deleted.
+    assert state["calls"] == 1
+
+
+def test_ai_status_reports_the_model(client, new_user, monkeypatch):
+    from app.ai import llm
+
+    monkeypatch.setenv("AI_MODEL", "a-model")
+    monkeypatch.setattr(llm, "is_reachable", lambda: False)
+    headers, _ = new_user()
+
+    assert client.get("/ai/status", headers=headers).json() == {
+        "model": "a-model", "reachable": False,
+    }

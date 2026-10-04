@@ -86,6 +86,25 @@
   .piece .heading { color: var(--muted); font-size: 12.5px; }
   .piece p { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
   mark { background: #fff1a8; border-radius: 3px; }
+  .progress { height: 6px; background: var(--line); border-radius: 999px; overflow: hidden; margin-top: 6px; }
+  .progress > div { height: 100%; background: var(--accent); width: 0; transition: width .4s; }
+  .sum h3 { font-size: 15.5px; margin: 22px 0 6px; padding-top: 14px; border-top: 1px solid var(--line); }
+  .sum h4 { font-size: 13.5px; margin: 12px 0 4px; color: var(--muted); font-weight: 600; }
+  .sum ul { margin: 4px 0; padding-inline-start: 20px; }
+  .sum li { margin: 3px 0; overflow-wrap: anywhere; }
+  .ref { color: var(--accent); font-size: 12px; white-space: nowrap; margin-inline-start: 6px; }
+  .tree, .tree ul { list-style: none; margin: 0; padding: 0; }
+  .tree ul { margin-inline-start: 10px; border-inline-start: 2px solid var(--accent-soft); padding-inline-start: 14px; }
+  .tree li { margin: 5px 0; }
+  .tree > li > span.t { font-weight: 600; }
+  .tbl-wrap { overflow-x: auto; margin: 8px 0; }
+  table.tbl { border-collapse: collapse; width: 100%; font-size: 14px; }
+  table.tbl caption { text-align: start; color: var(--muted); font-size: 13px; padding-bottom: 4px; }
+  table.tbl th, table.tbl td { border: 1px solid var(--line); padding: 6px 10px; text-align: start; vertical-align: top; }
+  table.tbl th { background: var(--accent-soft); font-weight: 600; }
+  .warn { background: var(--warn-soft); color: #7a5312; border-radius: 10px; padding: 8px 12px; margin: 6px 0; }
+  .ainote { background: var(--wait-soft); color: var(--wait); border-radius: 10px; padding: 8px 12px; margin: 6px 0; }
+  .overview { background: var(--accent-soft); border-radius: 12px; padding: 12px 14px; }
   .hidden { display: none !important; }
   .empty { color: var(--muted); text-align: center; padding: 16px 0; }
   bdi, .ltr { direction: ltr; unicode-bidi: isolate; }
@@ -197,6 +216,30 @@
       <div id="pieces"></div>
     </section>
 
+    <!-- خروجی‌های هوش مصنوعی -->
+    <section class="card" id="outputs-card">
+      <h2>۵. خلاصه‌ها</h2>
+      <p class="hint" id="ai-hint"></p>
+      <div class="row" style="margin-bottom:6px">
+        <div>
+          <label for="ai-mode">حالت خلاصه</label>
+          <select id="ai-mode">
+            <option value="SOURCE_ONLY">فقط از خود منبع</option>
+            <option value="SOURCE_PLUS_AI">منبع + توضیح هوش مصنوعی (جدا و برچسب‌دار)</option>
+          </select>
+        </div>
+      </div>
+      <p class="hint">برای ساختن خلاصه، در فهرست منبع‌ها کنار یک منبعِ «آماده» دکمهٔ «خلاصه بساز» را بزنید.</p>
+      <div class="msg" id="output-msg"></div>
+      <div id="outputs"></div>
+    </section>
+
+    <section class="card hidden sum" id="summary">
+      <h2>۶. <span id="summary-title"></span></h2>
+      <p class="hint" id="summary-meta"></p>
+      <div id="summary-body"></div>
+    </section>
+
   </div>
 </main>
 
@@ -220,7 +263,13 @@
     NO_SPEECH: "گفتاری در فایل تشخیص داده نشد",
     TRANSCRIPTION_FAILED: "تبدیل گفتار به متن شکست خورد",
     TRANSCRIBER_UNAVAILABLE: "مدل تشخیص گفتار در دسترس نیست",
-    AUDIO_TOO_LONG: "فایل صوتی بلندتر از ۲ ساعت است"
+    AUDIO_TOO_LONG: "فایل صوتی بلندتر از ۲ ساعت است",
+    AI_UNAVAILABLE: "مدل هوش مصنوعی در دسترس نیست (آیا Ollama روشن است؟)",
+    AI_MODEL_MISSING: "این مدل هوش مصنوعی نصب نشده است",
+    AI_FAILED: "مدل هوش مصنوعی خطا داد",
+    AI_BAD_ANSWER: "مدل هوش مصنوعی پاسخ قابل استفاده‌ای نداد",
+    INCOMPLETE: "بخشی از منبع خلاصه نشد (جدول پوشش را ببینید)",
+    NOTHING_TO_SUMMARISE: "این منبع متنی برای خلاصه کردن ندارد"
   };
   var MESSAGE = {
     "Invalid PDF file": "این فایل یک PDF سالم نیست.",
@@ -236,6 +285,10 @@
     "This email is already registered": "این ایمیل قبلاً ثبت شده است؛ «ورود» را بزنید.",
     "Only a failed source can be retried": "فقط منبع ناموفق را می‌شود دوباره امتحان کرد.",
     "The stored file of this source is missing": "فایل این منبع روی سرور پیدا نشد.",
+    "Only a source that is READY can be summarised": "فقط منبعِ «آماده» را می‌شود خلاصه کرد.",
+    "Another of your outputs is still being made; wait for it to finish": "یک خلاصهٔ دیگر شما هنوز در حال ساخت است؛ صبر کنید تا تمام شود.",
+    "The server is busy making other outputs; try again later": "سرور مشغول ساخت خروجی‌های دیگر است؛ بعداً دوباره امتحان کنید.",
+    "Output not found": "خلاصه پیدا نشد.",
     "Project not found": "پروژه پیدا نشد.",
     "Source not found": "منبع پیدا نشد."
   };
@@ -246,6 +299,9 @@
   var sources = [];
   var viewing = null;      // { source, view, pieces }
   var timer = null;
+  var outputs = [];
+  var outputTimer = null;
+  var shownOutput = null;
 
   try { token = localStorage.getItem("study-token"); } catch (e) {}
 
@@ -271,6 +327,7 @@
     }
     if (status === 401) return "ایمیل یا رمز درست نیست، یا باید دوباره وارد شوید.";
     if (status === 413) return "فایل بزرگ‌تر از حد مجاز است.";
+    if (status === 429 && MESSAGE[detail]) return MESSAGE[detail];
     if (status === 429) return "چند منبع شما هنوز در حال پردازش است؛ صبر کنید تا یکی تمام شود.";
     if (status === 422) return "ورودی درست نیست: " + (detail || "") + " (ایمیل معتبر، رمز دست‌کم ۸ نویسه، نام و عنوان غیرخالی)";
     if (MESSAGE[detail]) return MESSAGE[detail];
@@ -315,7 +372,8 @@
   }
 
   function signOut() {
-    token = null; project = null; sources = []; viewing = null;
+    token = null; project = null; sources = []; viewing = null; outputs = []; shownOutput = null;
+    clearInterval(outputTimer);
     try { localStorage.removeItem("study-token"); } catch (e) {}
     clearInterval(timer);
     $("app").classList.add("hidden");
@@ -381,6 +439,11 @@
       chip.classList.toggle("active", Number(chip.dataset.id) === item.id);
     });
     show("add-msg");
+    show("output-msg");
+    shownOutput = null;
+    $("summary").classList.add("hidden");
+    loadOutputs();
+    loadAiStatus();
     return loadSources();
   }
 
@@ -440,6 +503,12 @@
       view.onclick = function () { openSource(source); };
       row.appendChild(view);
 
+      if (source.status === "READY") {
+        var summarise = el("button", "small", "خلاصه بساز");
+        summarise.onclick = function () { makeSummary(source); };
+        row.appendChild(summarise);
+      }
+
       if (source.status === "FAILED" && source.source_type !== "PDF") {
         var retry = el("button", "soft small", "تلاش دوباره");
         retry.onclick = function () {
@@ -457,6 +526,7 @@
           if (viewing && viewing.source.id === source.id) {
             viewing = null; $("viewer").classList.add("hidden");
           }
+          loadOutputs();
           return loadSources();
         }).catch(function (e) { show("add-msg", e.message); });
       };
@@ -638,6 +708,204 @@
     tab.onclick = function () { setView(tab.dataset.view); };
   });
   $("search").oninput = function () { if (viewing) renderPieces(); };
+
+  /* ---------- خلاصه‌ها ---------- */
+
+  function loadAiStatus() {
+    api("GET", "/ai/status").then(function (info) {
+      $("ai-hint").textContent = info.reachable
+        ? "مدل هوش مصنوعی: " + info.model + " — در دسترس است."
+        : "مدل هوش مصنوعی (" + info.model + ") در دسترس نیست. برنامهٔ Ollama باید روی این کامپیوتر روشن باشد.";
+    }).catch(function () { $("ai-hint").textContent = ""; });
+  }
+
+  function makeSummary(source) {
+    show("output-msg");
+    api("POST", "/projects/" + project.id + "/outputs/", { json: {
+      goal_type: "SUMMARY", mode: $("ai-mode").value, source_ids: [source.id]
+    } }).then(function () {
+      show("output-msg", "ساخت خلاصه شروع شد. با مدل روی کامپیوتر خودتان ممکن است چند دقیقه تا چند ده دقیقه طول بکشد.", "info");
+      $("outputs-card").scrollIntoView({ behavior: "smooth", block: "start" });
+      return loadOutputs();
+    }).catch(function (e) {
+      show("output-msg", e.message);
+      $("outputs-card").scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }
+
+  function loadOutputs() {
+    if (!project) return Promise.resolve();
+    var id = project.id;
+    return api("GET", "/projects/" + id + "/outputs/").then(function (list) {
+      if (!project || project.id !== id) return;
+      outputs = list;
+      renderOutputs();
+      clearInterval(outputTimer);
+      if (list.some(function (o) { return o.status === "PROCESSING"; })) {
+        outputTimer = setInterval(loadOutputs, 4000);
+      }
+    }).catch(function () {});
+  }
+
+  function renderOutputs() {
+    var box = $("outputs");
+    box.textContent = "";
+    if (!outputs.length) { box.appendChild(el("div", "empty", "هنوز خلاصه‌ای ساخته نشده است.")); return; }
+
+    outputs.forEach(function (output) {
+      var row = el("div", "source");
+      var title = el("div", "title");
+      title.appendChild(el("bdi", null, output.title));
+      var meta = [output.mode === "SOURCE_PLUS_AI" ? "منبع + توضیح هوش مصنوعی" : "فقط از منبع"];
+      if (output.status === "PROCESSING" && output.progress_total) {
+        meta.push("بخش " + output.progress_done + " از " + output.progress_total);
+      }
+      if (output.status_detail) meta.push(REASON[output.status_detail] || output.status_detail);
+      title.appendChild(el("div", "meta", meta.join(" · ")));
+      if (output.status === "PROCESSING") {
+        var bar = el("div", "progress"), fill = el("div");
+        fill.style.width = (output.progress_total ? Math.round(100 * output.progress_done / output.progress_total) : 3) + "%";
+        bar.appendChild(fill); title.appendChild(bar);
+      }
+      row.appendChild(title);
+      row.appendChild(el("span", "badge " + output.status, STATUS[output.status] || output.status));
+
+      var view = el("button", "soft small", "مشاهده");
+      view.disabled = output.status === "PROCESSING" || output.status === "FAILED";
+      view.onclick = function () { openOutput(output.id); };
+      row.appendChild(view);
+
+      var remove = el("button", "danger small", output.status === "PROCESSING" ? "لغو" : "حذف");
+      remove.onclick = function () {
+        if (!confirm("«" + output.title + "» حذف شود؟")) return;
+        api("DELETE", "/outputs/" + output.id).then(function () {
+          if (shownOutput === output.id) { shownOutput = null; $("summary").classList.add("hidden"); }
+          return loadOutputs();
+        }).catch(function (e) { show("output-msg", e.message); });
+      };
+      row.appendChild(remove);
+      box.appendChild(row);
+    });
+  }
+
+  function refText(ref) {
+    if (!ref) return "";
+    if (ref.page_start !== undefined && ref.page_start !== null) {
+      return ref.page_start === ref.page_end ? "ص " + ref.page_start : "ص " + ref.page_start + "–" + ref.page_end;
+    }
+    if (ref.start_seconds !== undefined && ref.start_seconds !== null) {
+      return clock(ref.start_seconds) + "–" + clock(ref.end_seconds);
+    }
+    return "";
+  }
+
+  function withRef(node, ref) {
+    var text = refText(ref);
+    if (text) node.appendChild(el("span", "ref", "(" + text + ")"));
+    return node;
+  }
+
+  function openOutput(id) {
+    api("GET", "/outputs/" + id).then(function (output) {
+      shownOutput = id;
+      renderSummary(output);
+      $("summary").classList.remove("hidden");
+      $("summary").scrollIntoView({ behavior: "smooth", block: "start" });
+    }).catch(function (e) { show("output-msg", e.message); });
+  }
+
+  function renderSummary(output) {
+    var content = output.content || {};
+    $("summary-title").textContent = output.title;
+    $("summary-meta").textContent =
+      (content.mode === "SOURCE_PLUS_AI" ? "منبع + توضیح هوش مصنوعی" : "فقط از خود منبع") +
+      " · مدل: " + (content.model || "") +
+      " · " + new Date(output.created_at + "Z").toLocaleString("fa-IR");
+
+    var body = $("summary-body");
+    body.textContent = "";
+
+    if (content.overview) {
+      body.appendChild(el("h3", null, "نمای کلی"));
+      body.appendChild(el("div", "overview", content.overview));
+    }
+
+    if ((content.outline || []).length) {
+      body.appendChild(el("h3", null, "نمودار درختی سرفصل‌ها"));
+      var tree = el("ul", "tree");
+      content.outline.forEach(function (node) {
+        var li = el("li");
+        li.appendChild(withRef(el("span", "t", node.title), node.ref));
+        if ((node.children || []).length) {
+          var sub = el("ul");
+          node.children.forEach(function (child) {
+            var c = el("li");
+            c.appendChild(withRef(el("span", null, child.title), child.ref));
+            sub.appendChild(c);
+          });
+          li.appendChild(sub);
+        }
+        tree.appendChild(li);
+      });
+      body.appendChild(tree);
+    }
+
+    (content.sections || []).forEach(function (section) {
+      body.appendChild(withRef(el("h3", null, section.title), section.ref));
+
+      var list = null, current = "\u0000";
+      (section.key_points || []).forEach(function (point) {
+        var sub = point.subheading || "";
+        if (sub !== current) {
+          current = sub;
+          if (sub) body.appendChild(el("h4", null, sub));
+          list = el("ul"); body.appendChild(list);
+        }
+        list.appendChild(withRef(el("li", null, point.text), point.ref));
+      });
+
+      (section.tables || []).forEach(function (table) {
+        var wrap = el("div", "tbl-wrap"), t = el("table", "tbl");
+        var caption = el("caption", null, table.title || "جدول");
+        withRef(caption, table.ref); t.appendChild(caption);
+        var head = el("tr");
+        table.columns.forEach(function (c) { head.appendChild(el("th", null, c)); });
+        var thead = el("thead"); thead.appendChild(head); t.appendChild(thead);
+        var tb = el("tbody");
+        table.rows.forEach(function (r) {
+          var tr = el("tr");
+          r.forEach(function (cell) { tr.appendChild(el("td", null, cell)); });
+          tb.appendChild(tr);
+        });
+        t.appendChild(tb); wrap.appendChild(t); body.appendChild(wrap);
+      });
+
+      (section.warnings || []).forEach(function (w) {
+        body.appendChild(withRef(el("div", "warn", "توجه: " + w.text), w.ref));
+      });
+      (section.ai_notes || []).forEach(function (note) {
+        body.appendChild(el("div", "ainote", "توضیح هوش مصنوعی (بیرون از منبع): " + note));
+      });
+    });
+
+    if ((content.coverage || []).length) {
+      body.appendChild(el("h3", null, "فهرست پوشش"));
+      var wrap = el("div", "tbl-wrap"), t = el("table", "tbl"), head = el("tr");
+      ["بخش منبع", "محل", "وضعیت"].forEach(function (c) { head.appendChild(el("th", null, c)); });
+      var thead = el("thead"); thead.appendChild(head); t.appendChild(thead);
+      var tb = el("tbody");
+      var label = { COMPLETE: "کامل خلاصه شد", PARTIAL: "ناقص", MISSING: "خلاصه نشد" };
+      content.coverage.forEach(function (item) {
+        var tr = el("tr");
+        tr.appendChild(el("td", null, item.title));
+        tr.appendChild(el("td", null, refText(item.ref)));
+        tr.appendChild(el("td", null, (label[item.status] || item.status) +
+          (item.parts > 1 ? " (" + item.done + " از " + item.parts + " قسمت)" : "")));
+        tb.appendChild(tr);
+      });
+      t.appendChild(tb); wrap.appendChild(t); body.appendChild(wrap);
+    }
+  }
 
   /* ---------- شروع ---------- */
 
