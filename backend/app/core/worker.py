@@ -84,3 +84,5 @@ class JobLine:
 speech = JobLine("speech", max_waiting=20)
 # Fetching from YouTube waits on the network.
 network = JobLine("network", max_waiting=50)
+# Making an AI output can take many minutes with a local model.
+ai = JobLine("ai", max_waiting=20)

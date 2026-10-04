@@ -4,7 +4,7 @@ import logging
 import time
 
 from fastapi import HTTPException
-from sqlalchemy import update
+from sqlalchemy import text, update
 from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
@@ -13,12 +13,21 @@ from app.models.source import SourceDB
 
 logger = logging.getLogger(__name__)
 
+SOURCE_LOCK_SPACE = 1
+
 
 def require_processing_slot(db: Session, user_id: int) -> None:
     """Refuse a new job while the user already has too many in processing.
 
     Keeps one user from filling the waiting lines for everybody else.
     """
+    # Requests of the same user wait for each other here, so that several
+    # sent at the same moment cannot all slip under the limit.
+    db.execute(
+        text("SELECT pg_advisory_xact_lock(:space, :user)"),
+        {"space": SOURCE_LOCK_SPACE, "user": user_id},
+    )
+
     in_processing = db.query(SourceDB).filter(
         SourceDB.user_id == user_id,
         SourceDB.status == "PROCESSING"

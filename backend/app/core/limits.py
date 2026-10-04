@@ -16,6 +16,9 @@ MAX_AUDIO_HOURS = 2
 # How many sources one user may have in processing at the same time.
 MAX_PROCESSING_PER_USER = 5
 
+# How many AI outputs one user may have in the making at the same time.
+MAX_OUTPUTS_IN_PROCESSING_PER_USER = 1
+
 # A YouTube source may be sent together with its transcript.
 MAX_TRANSCRIPT_REQUEST_BYTES = 5 * MEGABYTE
 

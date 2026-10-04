@@ -11,6 +11,7 @@ from app.models import (  # noqa: F401
     source_chunk,
     source_page,
     source_segment,
+    output,
     user,
 )
 
