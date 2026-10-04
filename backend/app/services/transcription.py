@@ -18,9 +18,11 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
-# Which Whisper model to use. Larger models are more accurate and slower:
-# tiny, base, small, medium, large-v3.
-MODEL_NAME = os.getenv("WHISPER_MODEL", "small")
+# Which Whisper model to use: tiny, base, small, medium, large-v3-turbo,
+# large-v3. The default was chosen by comparing four models on a real
+# Persian recording: large-v3-turbo was clearly more accurate than small
+# and medium, about as accurate as large-v3, and the fastest of the four.
+MODEL_NAME = os.getenv("WHISPER_MODEL", "large-v3-turbo")
 
 # Reasons reported together with FAILED.
 TRANSCRIBER_UNAVAILABLE = "TRANSCRIBER_UNAVAILABLE"

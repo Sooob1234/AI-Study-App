@@ -98,9 +98,11 @@ pip install -r requirements-audio.txt
 ```
 
 Without it the app runs and answers audio uploads with 503. The first audio
-file downloads the model (about 500 MB for the default `small`) from
-huggingface.co. `WHISPER_MODEL` in `.env` chooses the model: `tiny`, `base`,
-`small`, `medium`, `large-v3` (larger is more accurate and slower).
+file downloads the model (about 1.6 GB for the default `large-v3-turbo`) from
+huggingface.co. `WHISPER_MODEL` in `.env` chooses another model: `tiny`,
+`base`, `small`, `medium`, `large-v3`. On a real Persian recording the default
+was clearly more accurate than `small` and `medium`, about as accurate as
+`large-v3`, and the fastest of the four.
 
 Send the spoken language with the upload (`language=fa`). Without it the
 language is guessed, and a wrong guess gives a useless transcript.
