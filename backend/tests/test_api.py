@@ -1364,3 +1364,36 @@ def test_simultaneous_requests_cannot_slip_under_the_one_output_limit(client, ne
         thread.join()
 
     assert sorted(codes) == [200] + [429] * 7
+
+
+def test_partial_summary_is_readable_while_the_rest_is_made(client, new_user, monkeypatch):
+    headers, _ = new_user()
+    project_id = _project(client, headers)
+    source = _upload(client, headers, project_id).json()
+    seen = []
+
+    def watching(system, user):
+        listed = client.get(f"/projects/{project_id}/outputs/", headers=headers).json()
+        output = client.get(f"/outputs/{listed[0]['id']}", headers=headers).json()
+        content = output["content"] or {}
+        seen.append((
+            output["status"], output["progress_done"],
+            content.get("partial"), [s["title"] for s in content.get("sections", [])],
+        ))
+        if '"overview"' in system:
+            return {"overview": "All of it."}
+        return {"key_points": [{"text": "A point.", "part": 1}]}
+
+    _fake_model(monkeypatch, watching)
+    created = _summarise(client, headers, project_id, source["id"]).json()
+
+    # Seen by the model calls for chapter 1, chapter 2 and the overview.
+    assert seen == [
+        ("PROCESSING", 0, None, []),
+        ("PROCESSING", 1, True, ["1- First chapter"]),
+        ("PROCESSING", 2, True, ["1- First chapter", "2- Second chapter"]),
+    ]
+    final = client.get(f"/outputs/{created['id']}", headers=headers).json()
+    assert (final["status"], final["content"]["partial"], final["content"]["overview"]) == (
+        "READY", False, "All of it."
+    )

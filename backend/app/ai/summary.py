@@ -488,11 +488,15 @@ def build_summary(
     chunks: list[ChunkIn],
     mode: str,
     on_progress: Callable[[int, int], bool] | None = None,
+    on_section: Callable[[dict], None] | None = None,
 ) -> SummaryResult:
     """Summarise a source.
 
     `on_progress(done, total)` is called after every part; if it returns
     False the run stops (the output was deleted meanwhile).
+
+    `on_section(content)` is called after every section with the summary
+    as far as it has come, so that it can be read while the rest is made.
     """
     chunks = [chunk for chunk in chunks if chunk.text.strip()]
     if not chunks:
@@ -510,6 +514,24 @@ def build_summary(
 
     sections: list[dict] = []
     coverage: list[dict] = []
+    full_outline = build_outline(chunks)
+
+    def content_so_far(overview: str, partial: bool) -> dict:
+        return {
+            "version": 1,
+            "mode": mode,
+            "model": llm.model_name(),
+            "partial": partial,
+            "overview": overview,
+            # A source without headings has the list of its sections as
+            # its outline.
+            "outline": full_outline or [
+                {"title": s["title"], "ref": s["ref"], "children": []}
+                for s in sections
+            ],
+            "sections": list(sections),
+            "coverage": list(coverage),
+        }
 
     for number, section in enumerate(plan, start=1):
         merged = {
@@ -571,6 +593,9 @@ def build_summary(
         if succeeded:
             sections.append(merged)
 
+        if on_section is not None and sections:
+            on_section(content_so_far("", partial=True))
+
     if not sections:
         return SummaryResult({}, "FAILED", last_error or llm.AI_FAILED)
 
@@ -583,23 +608,7 @@ def build_summary(
         except llm.LLMError:
             pass
 
-    outline = build_outline(chunks)
-    if not outline:
-        # No headings in the source: the outline is the list of sections.
-        outline = [
-            {"title": s["title"], "ref": s["ref"], "children": []}
-            for s in sections
-        ]
-
-    content = {
-        "version": 1,
-        "mode": mode,
-        "model": llm.model_name(),
-        "overview": overview,
-        "outline": outline,
-        "sections": sections,
-        "coverage": coverage,
-    }
+    content = content_so_far(overview, partial=False)
 
     complete = all(item["status"] == "COMPLETE" for item in coverage)
     if complete:

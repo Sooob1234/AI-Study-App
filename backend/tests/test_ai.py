@@ -480,3 +480,25 @@ def test_reachability_is_remembered_briefly_and_strict(monkeypatch):
     assert llm.is_reachable() is False
     assert llm.is_reachable() is False
     assert len(calls) == 1
+
+
+def test_the_summary_can_be_read_while_it_is_being_made(monkeypatch):
+    monkeypatch.setenv("AI_MAX_INPUT_CHARS", "100000")
+    _fake_model(monkeypatch, _good)
+    seen = []
+
+    result = build_summary(
+        BOOK, summary.SOURCE_ONLY,
+        on_section=lambda content: seen.append(
+            (content["partial"], [s["title"] for s in content["sections"]],
+             len(content["coverage"]), len(content["outline"]), content["overview"])
+        ),
+    )
+
+    # After each chapter: that chapter is there, the whole outline already is.
+    assert seen == [
+        (True, ["1- فصل اول"], 1, 2, ""),
+        (True, ["1- فصل اول", "2- فصل دوم"], 2, 2, ""),
+    ]
+    assert result.content["partial"] is False
+    assert result.content["overview"]

@@ -302,6 +302,7 @@
   var outputs = [];
   var outputTimer = null;
   var shownOutput = null;
+  var shownPartial = false;
 
   try { token = localStorage.getItem("study-token"); } catch (e) {}
 
@@ -740,6 +741,9 @@
       if (!project || project.id !== id) return;
       outputs = list;
       renderOutputs();
+      // The open summary grows as new chapters are finished.
+      var open = list.filter(function (o) { return o.id === shownOutput; })[0];
+      if (open && (open.status === "PROCESSING" || shownPartial)) refreshOutput(open.id);
       clearInterval(outputTimer);
       if (list.some(function (o) { return o.status === "PROCESSING"; })) {
         outputTimer = setInterval(loadOutputs, 4000);
@@ -771,7 +775,10 @@
       row.appendChild(el("span", "badge " + output.status, STATUS[output.status] || output.status));
 
       var view = el("button", "soft small", "مشاهده");
-      view.disabled = output.status === "PROCESSING" || output.status === "FAILED";
+      // A summary can be read while it is still being made, as soon as
+      // its first chapter is ready.
+      view.disabled = output.status === "FAILED" ||
+        (output.status === "PROCESSING" && !output.progress_done);
       view.onclick = function () { openOutput(output.id); };
       row.appendChild(view);
 
@@ -805,6 +812,15 @@
     return node;
   }
 
+  function refreshOutput(id) {
+    api("GET", "/outputs/" + id).then(function (output) {
+      if (shownOutput !== id) return;
+      var top = window.scrollY;
+      renderSummary(output);
+      window.scrollTo(0, top);
+    }).catch(function () {});
+  }
+
   function openOutput(id) {
     api("GET", "/outputs/" + id).then(function (output) {
       shownOutput = id;
@@ -824,6 +840,13 @@
 
     var body = $("summary-body");
     body.textContent = "";
+
+    shownPartial = output.status === "PROCESSING";
+    if (shownPartial) {
+      body.appendChild(el("div", "msg show info",
+        "این خلاصه هنوز در حال ساخت است (قسمت " + output.progress_done + " از " +
+        output.progress_total + "). فصل‌های آماده را می‌توانید بخوانید؛ بقیه خودکار اضافه می‌شود. نمای کلی در پایان نوشته می‌شود."));
+    }
 
     if (content.overview) {
       body.appendChild(el("h3", null, "نمای کلی"));

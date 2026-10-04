@@ -153,7 +153,23 @@ def _make_summary(output_id: int) -> None:
         finally:
             session.close()
 
-    result = build_summary(chunks, mode, on_progress)
+    def on_section(content: dict) -> None:
+        # What is ready so far is stored, so that it can already be read.
+        session = SessionLocal()
+        try:
+            session.execute(
+                update(OutputDB)
+                .where(OutputDB.id == output_id, OutputDB.status == "PROCESSING")
+                .values(content=content)
+            )
+            session.commit()
+        except Exception:
+            session.rollback()
+            logger.exception("Could not store the partial content of output %s", output_id)
+        finally:
+            session.close()
+
+    result = build_summary(chunks, mode, on_progress, on_section)
 
     # Step 3: store the result.
     _finish(output_id, {
