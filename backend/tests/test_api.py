@@ -1107,8 +1107,6 @@ def test_summary_of_a_pdf_is_made_and_stored(client, new_user, monkeypatch):
     listed = client.get(f"/projects/{project_id}/outputs/", headers=headers).json()
     assert [(item["id"], "content" in item) for item in listed] == [(created["id"], False)]
 
-    # Deleting the source takes the outputs made only from it along? No:
-    # the output stays, without that source in its list.
     assert client.delete(f"/outputs/{created['id']}", headers=headers).status_code == 200
     assert client.get(f"/outputs/{created['id']}", headers=headers).status_code == 404
     assert client.get(f"/projects/{project_id}/outputs/", headers=headers).json() == []
@@ -1253,3 +1251,116 @@ def test_ai_status_reports_the_model(client, new_user, monkeypatch):
     assert client.get("/ai/status", headers=headers).json() == {
         "model": "a-model", "reachable": False,
     }
+
+
+def test_listing_outputs_is_light_and_a_stale_job_changes_nothing(client, new_user, monkeypatch):
+    from app.api.outputs import _finish, make_summary
+    from app.core.database import SessionLocal
+    from app.models.output import OutputDB
+
+    _fake_model(monkeypatch)
+    headers, _ = new_user()
+    project_id = _project(client, headers)
+    source = _upload(client, headers, project_id).json()
+    first = _summarise(client, headers, project_id, source["id"]).json()
+    second = _summarise(client, headers, project_id, source["id"]).json()
+
+    listed = client.get(f"/projects/{project_id}/outputs/", headers=headers).json()
+    assert [(o["id"], o["source_ids"], "content" in o) for o in listed] == [
+        (second["id"], [source["id"]], False),
+        (first["id"], [source["id"]], False),
+    ]
+
+    # A job that finishes late must not touch an output that is no longer waiting.
+    db = SessionLocal()
+    db.query(OutputDB).filter(OutputDB.id == first["id"]).update(
+        {"status": "FAILED", "status_detail": "INTERRUPTED", "content": None}
+    )
+    db.commit()
+    db.close()
+
+    _finish(first["id"], {"status": "READY", "status_detail": None, "content": {"late": True}})
+    make_summary(first["id"])
+
+    after = client.get(f"/outputs/{first['id']}", headers=headers).json()
+    assert (after["status"], after["status_detail"], after["content"]) == (
+        "FAILED", "INTERRUPTED", None
+    )
+
+    # Deleting the source keeps the output, without that source in its list.
+    assert client.delete(f"/sources/{source['id']}", headers=headers).status_code == 200
+    kept = client.get(f"/outputs/{second['id']}", headers=headers).json()
+    assert (kept["status"], kept["source_ids"]) == ("READY", [])
+
+
+def test_summary_of_a_timed_source_uses_time_references(client, new_user, monkeypatch):
+    _fake_model(monkeypatch)
+    headers, _ = new_user()
+    project_id = _project(client, headers)
+    sentence = "a sentence spoken in the lecture about the topic at hand "
+    source = client.post(
+        f"/projects/{project_id}/sources/youtube",
+        json={"url": VIDEO, "segments": [
+            {"start": i * 10.0, "duration": 10.0, "text": sentence * 4} for i in range(30)
+        ]},
+        headers=headers,
+    ).json()
+
+    created = _summarise(client, headers, project_id, source["id"]).json()
+    content = client.get(f"/outputs/{created['id']}", headers=headers).json()["content"]
+
+    assert len(content["sections"]) > 1
+    assert content["sections"][0]["ref"]["start_seconds"] == 0.0
+    assert content["sections"][-1]["ref"]["end_seconds"] == 300.0
+    assert "page_start" not in content["sections"][0]["key_points"][0]["ref"]
+    assert [n["title"] for n in content["outline"]] == [s["title"] for s in content["sections"]]
+
+
+def test_a_job_line_that_cannot_take_the_output_marks_it_failed(client, new_user, monkeypatch):
+    from app.core import worker
+
+    _fake_model(monkeypatch)
+    headers, _ = new_user()
+    project_id = _project(client, headers)
+    source = _upload(client, headers, project_id).json()
+
+    def broken(job, *args):
+        raise RuntimeError("the worker thread could not be started")
+
+    monkeypatch.setattr(worker.ai, "submit", broken)
+    created = _summarise(client, headers, project_id, source["id"])
+    assert created.status_code == 200
+    assert (created.json()["status"], created.json()["status_detail"]) == ("FAILED", "SERVER_BUSY")
+
+    stored = client.get(f"/outputs/{created.json()['id']}", headers=headers).json()
+    assert stored["status"] == "FAILED"
+
+    monkeypatch.setattr(worker.ai, "has_room", lambda: False)
+    assert _summarise(client, headers, project_id, source["id"]).status_code == 503
+
+
+def test_simultaneous_requests_cannot_slip_under_the_one_output_limit(client, new_user, monkeypatch):
+    import threading
+
+    from app.core import worker
+
+    _fake_model(monkeypatch)
+    headers, _ = new_user()
+    project_id = _project(client, headers)
+    source = _upload(client, headers, project_id).json()
+
+    # Jobs are accepted but not run, so every accepted output stays PROCESSING.
+    monkeypatch.setattr(worker.ai, "submit", lambda job, *args: None)
+
+    codes = []
+
+    def ask():
+        codes.append(_summarise(client, headers, project_id, source["id"]).status_code)
+
+    threads = [threading.Thread(target=ask) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert sorted(codes) == [200] + [429] * 7

@@ -131,7 +131,12 @@ Every part of the source is given to the model, so nothing is skipped by
 design; a part the model fails on twice is shown in `coverage` and the output
 becomes `NEEDS_REVIEW / INCOMPLETE`. A failed output says why in
 `status_detail` (`AI_UNAVAILABLE`, `AI_MODEL_MISSING`, `AI_FAILED`,
-`AI_BAD_ANSWER`, `INTERRUPTED`).
+`AI_BAD_ANSWER`, `SOURCE_TOO_LARGE`, `INTERRUPTED`).
+
+The model's answer is treated as untrusted: every text taken from it is
+bounded in length and number, a run stops after three parts in a row that
+the model could not do, and one user can have one output in the making at
+a time.
 
 The AI code lives in `app/ai` and reads only chunks; it is separate from
 source processing in `app/services`.
@@ -147,7 +152,8 @@ The app speaks the OpenAI-compatible chat format, so the model is chosen in
 | `AI_MODEL` | `gemma3:12b` | which model |
 | `AI_API_KEY` | empty | key for a hosted service |
 | `AI_MAX_INPUT_CHARS` | `3000` | how much text the model is given at once |
-| `AI_TIMEOUT_SECONDS` | `900` | how long to wait for one answer |
+| `AI_TIMEOUT_SECONDS` | `600` | how long to wait for one answer |
+| `AI_MAX_OUTPUT_TOKENS` | `2000` | the longest answer the model may give |
 
 By default an open model runs on the computer itself through
 [Ollama](https://ollama.com): install Ollama, then `ollama pull gemma3:12b`.

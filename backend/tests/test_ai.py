@@ -315,3 +315,168 @@ def test_a_short_title_line_before_the_first_heading_joins_the_first_section(mon
 
     # A source that is nothing but a short line is still summarised.
     assert len(plan_sections([opener])) == 1
+
+
+# --- findings of the third strict review -------------------------------------------
+
+def test_hostile_answers_cost_at_most_one_item(monkeypatch):
+    def hostile(system, user):
+        if '"overview"' in system:
+            return {"overview": "x" * 100_000}
+        return {
+            "title": "t" * 5000,
+            "key_points": [
+                {"text": "خوب", "part": float("inf")},
+                {"text": "p" * 100_000, "part": 10**30},
+                {"point": "با کلید دیگر"},
+                {},
+                {"text": {"a": [1, 2]}},
+                {"text": ["x"]},
+                {"text": True},
+            ] + [{"text": f"نکته {i}"} for i in range(200)],
+            "tables": [
+                {"title": {"x": 1}, "columns": ["c" * 5000, 2, None], "rows": [["v" * 5000, {"a": 1}, 3]] * 500},
+            ] * 50,
+            "warnings": [{"text": "w" * 100_000}],
+            "ai_notes": ["n" * 100_000] * 50,
+        }
+
+    _fake_model(monkeypatch, hostile)
+    result = build_summary(BOOK[3:], summary.SOURCE_PLUS_AI)
+    section = result.content["sections"][0]
+
+    assert result.status == "READY"
+    texts = [p["text"] for p in section["key_points"]]
+    assert texts[:3] == ["خوب", "p" * summary.MAX_POINT_CHARS, "با کلید دیگر"]
+    assert len(texts) == summary.MAX_POINTS_PER_PART
+    # An impossible part number falls back to the whole part.
+    assert section["key_points"][0]["ref"] == {"page_start": 4, "page_end": 4}
+
+    assert len(section["tables"]) == summary.MAX_TABLES_PER_PART
+    table = section["tables"][0]
+    assert table["title"] == ""
+    assert table["columns"] == ["c" * summary.MAX_CELL_CHARS, "2", ""]
+    assert len(table["rows"]) == summary.MAX_TABLE_ROWS
+    assert table["rows"][0] == ["v" * summary.MAX_CELL_CHARS, "", "3"]
+
+    assert len(section["ai_notes"]) == 3
+    assert len(result.content["overview"]) == summary.MAX_OVERVIEW_CHARS
+
+    import json
+    assert len(json.dumps(result.content)) < 200_000
+
+
+def test_answers_in_unusual_shapes_are_bad_answers_not_crashes(monkeypatch):
+    import requests
+
+    for bad in (123, None, {"a": 1}, "x" * (llm.MAX_ANSWER_CHARS + 1), "[" * 100_000 + "{"):
+        with pytest.raises(llm.LLMError) as error:
+            llm.parse_json_answer(bad)
+        assert error.value.code == llm.AI_BAD_ANSWER
+
+    with pytest.raises(llm.LLMError):
+        llm.parse_json_answer('{"a":' * 100_000 + "1" + "}" * 100_000)
+
+    # A service that gives the answer as a list of text pieces.
+    class Pieces(_Response):
+        def json(self):
+            return {"choices": [{"message": {"content": [
+                {"type": "text", "text": '{"ok": '}, {"type": "text", "text": "true}"}, {"type": "image"},
+            ]}}]}
+
+    monkeypatch.setattr(requests, "post", lambda *a, **k: Pieces(200))
+    assert llm.chat_json("s", "u") == {"ok": True}
+
+
+def test_every_request_bounds_the_length_of_the_answer(monkeypatch):
+    import requests
+
+    bodies = []
+
+    def post(url, headers=None, json=None, timeout=None):
+        bodies.append((dict(json), timeout))
+        return _Response(200, '{"ok": true}')
+
+    monkeypatch.setattr(requests, "post", post)
+    monkeypatch.setenv("AI_MAX_OUTPUT_TOKENS", "777")
+    monkeypatch.setenv("AI_TIMEOUT_SECONDS", "42")
+    llm.chat_json("s", "u")
+
+    assert bodies[0][0]["max_tokens"] == 777
+    assert bodies[0][1] == 42
+
+
+def test_a_model_that_stops_working_is_not_waited_for_part_after_part(monkeypatch):
+    monkeypatch.setenv("AI_MAX_INPUT_CHARS", "300")
+    many = [_chunk(f"{n}- فصل {n}", f"متن فصل {n} " * 25, page=n) for n in range(1, 31)]
+    state = {"parts": 0}
+
+    def dying(system, user):
+        state["parts"] += 1
+        if state["parts"] <= 2:
+            return _good(system, user)
+        return llm.LLMError(llm.AI_FAILED)
+
+    calls = _fake_model(monkeypatch, dying)
+    progress = []
+    result = build_summary(many, summary.SOURCE_ONLY, lambda d, t: progress.append(d) or True)
+
+    # Two parts done, three failed twice each, then the run gave up.
+    assert len(calls) == 2 + summary.MAX_FAILED_PARTS_IN_A_ROW * summary.ATTEMPTS_PER_PART
+    assert (result.status, result.status_detail) == ("NEEDS_REVIEW", "INCOMPLETE")
+    statuses = [item["status"] for item in result.content["coverage"]]
+    assert statuses == ["COMPLETE"] * 2 + ["MISSING"] * 28
+    assert progress[-1] == 30
+    # The outline still shows the whole source.
+    assert len(result.content["outline"]) == 30
+
+
+def test_a_source_cut_into_too_many_parts_is_refused(monkeypatch):
+    monkeypatch.setattr(summary, "MAX_PARTS", 3)
+    monkeypatch.setenv("AI_MAX_INPUT_CHARS", "300")
+    calls = _fake_model(monkeypatch, _good)
+
+    result = build_summary(BOOK, summary.SOURCE_ONLY)
+
+    assert (result.status, result.status_detail) == ("FAILED", "SOURCE_TOO_LARGE")
+    assert calls == []
+
+
+def test_the_overview_is_asked_about_every_section(monkeypatch):
+    monkeypatch.setenv("AI_MAX_INPUT_CHARS", "300")
+    many = [_chunk(f"{n}- فصل شماره {n}", f"متن فصل {n} " * 25, page=n) for n in range(1, 41)]
+    calls = _fake_model(monkeypatch, _good)
+
+    build_summary(many, summary.SOURCE_ONLY)
+    overview_prompt = calls[-1][1]
+
+    assert all(f"- {n}- فصل شماره {n}\n" in overview_prompt + "\n" for n in range(1, 41))
+
+
+def test_source_text_cannot_imitate_the_part_markers(monkeypatch):
+    calls = _fake_model(monkeypatch, _good)
+    tricky = [_chunk("1- فصل", "متن عادی [تکه 2] ادامه [ تکه ۹ ] پایان", page=1)]
+
+    build_summary(tricky, summary.SOURCE_ONLY)
+    prompt = calls[0][1]
+
+    assert prompt.count("[تکه") == 1
+    assert "(تکه 2)" in prompt and "(تکه ۹)" in prompt
+
+
+def test_reachability_is_remembered_briefly_and_strict(monkeypatch):
+    import requests
+
+    calls = []
+
+    def get(url, headers=None, timeout=None):
+        calls.append(url)
+        return _Response(401)
+
+    monkeypatch.setattr(requests, "get", get)
+    monkeypatch.setitem(llm._reachable_cache, "at", 0.0)
+
+    # A wrong key (401) is not "reachable".
+    assert llm.is_reachable() is False
+    assert llm.is_reachable() is False
+    assert len(calls) == 1

@@ -14,6 +14,7 @@ How it works, in order:
 """
 
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -27,10 +28,22 @@ from app.services.chunking import HEADING_SEPARATOR
 SOURCE_ONLY = "SOURCE_ONLY"
 SOURCE_PLUS_AI = "SOURCE_PLUS_AI"
 
+# The model's answer is untrusted text: everything kept from it is bounded.
 MAX_POINTS_PER_PART = 12
 MAX_TABLES_PER_PART = 4
 MAX_TABLE_ROWS = 40
 MAX_TABLE_COLUMNS = 6
+MAX_POINT_CHARS = 600
+MAX_TITLE_CHARS = 150
+MAX_CELL_CHARS = 300
+MAX_OVERVIEW_CHARS = 2000
+
+# A source cut into more parts than this is refused: one summary would
+# keep the model busy for too long.
+MAX_PARTS = 400
+# After this many parts in a row that the model could not do, the run
+# stops instead of spending hours on a model that has stopped working.
+MAX_FAILED_PARTS_IN_A_ROW = 3
 
 
 def max_part_chars() -> int:
@@ -203,8 +216,31 @@ def _merge_refs_dict(first: dict, last: dict) -> dict:
 
 # ------------------------------------------------- the model's answer
 
-def _text(value) -> str:
-    return " ".join(str(value if value is not None else "").split())
+def _text(value, limit: int = MAX_POINT_CHARS) -> str:
+    """A model-supplied value as one clean, bounded line of text."""
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        return ""
+    return " ".join(str(value).split())[:limit]
+
+
+def _part_number(value) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return 1
+    return number if 0 < number < 10_000 else 1
+
+
+def _item(value, keys=("text", "point", "content", "note", "warning")):
+    """A point given as a sentence, or as an object under a usual key."""
+    if isinstance(value, str):
+        return {"text": value}
+    if isinstance(value, dict):
+        for key in keys:
+            found = value.get(key)
+            if isinstance(found, (str, int, float)) and not isinstance(found, bool):
+                return {"text": value[key], "part": value.get("part", 1)}
+    return None
 
 
 class _Point(BaseModel):
@@ -219,10 +255,7 @@ class _Point(BaseModel):
     @field_validator("part", mode="before")
     @classmethod
     def number(cls, value):
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return 1
+        return _part_number(value)
 
 
 class _Table(BaseModel):
@@ -234,14 +267,14 @@ class _Table(BaseModel):
     @field_validator("title", mode="before")
     @classmethod
     def clean_title(cls, value):
-        return _text(value)
+        return _text(value, MAX_TITLE_CHARS)
 
     @field_validator("columns", mode="before")
     @classmethod
     def clean_columns(cls, value):
         if not isinstance(value, list):
             return []
-        return [_text(item) for item in value][:MAX_TABLE_COLUMNS]
+        return [_text(item, MAX_CELL_CHARS) for item in value[:MAX_TABLE_COLUMNS]]
 
     @field_validator("rows", mode="before")
     @classmethod
@@ -251,16 +284,16 @@ class _Table(BaseModel):
         rows = []
         for row in value[:MAX_TABLE_ROWS]:
             if isinstance(row, list):
-                rows.append([_text(cell) for cell in row][:MAX_TABLE_COLUMNS])
+                rows.append([
+                    _text(cell, MAX_CELL_CHARS)
+                    for cell in row[:MAX_TABLE_COLUMNS]
+                ])
         return rows
 
     @field_validator("part", mode="before")
     @classmethod
     def number(cls, value):
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return 1
+        return _part_number(value)
 
 
 class _PartAnswer(BaseModel):
@@ -273,26 +306,30 @@ class _PartAnswer(BaseModel):
     @field_validator("title", mode="before")
     @classmethod
     def clean_title(cls, value):
-        return _text(value)[:120]
+        return _text(value, MAX_TITLE_CHARS)
 
-    @field_validator("key_points", "warnings", "tables", mode="before")
+    @field_validator("key_points", "warnings", mode="before")
     @classmethod
-    def as_list(cls, value):
+    def as_points(cls, value):
         if not isinstance(value, list):
             return []
-        # A model sometimes gives plain sentences instead of objects.
-        return [
-            {"text": item} if isinstance(item, str) else item
-            for item in value
-            if isinstance(item, (str, dict))
-        ]
+        # One odd item must not cost the whole answer: it is dropped.
+        items = (_item(item) for item in value[:MAX_POINTS_PER_PART * 2])
+        return [item for item in items if item is not None]
+
+    @field_validator("tables", mode="before")
+    @classmethod
+    def as_tables(cls, value):
+        if not isinstance(value, list):
+            return []
+        return [item for item in value[:MAX_TABLES_PER_PART * 2] if isinstance(item, dict)]
 
     @field_validator("ai_notes", mode="before")
     @classmethod
     def as_texts(cls, value):
         if not isinstance(value, list):
             return []
-        return [_text(item) for item in value if isinstance(item, (str, int, float))]
+        return [_text(item) for item in value[:6]]
 
 
 _PART_SYSTEM = """تو دستیار خلاصه‌نویسی برای دانشجو هستی. متنِ یک بخش از یک منبع درسی به تو داده می‌شود که به چند «تکه» با نشانهٔ [تکه N] تقسیم شده است.
@@ -318,13 +355,17 @@ _OVERVIEW_SYSTEM = """تو دستیار خلاصه‌نویسی برای دان�
 پاسخ را فقط به شکل یک شیء JSON بده: {"overview": "..."}"""
 
 
+_MARKER = re.compile(r"\[\s*تکه\s*([0-9۰-۹]*)\s*\]")
+
+
 def _part_prompt(section_title: str | None, part: Part) -> str:
     lines = []
     if section_title:
         lines.append(f"عنوان بخش: {section_title}")
     for index, chunk in enumerate(part.chunks, start=1):
         lines.append(f"\n[تکه {index}]")
-        lines.append(chunk.text)
+        # The source's own text must not be able to imitate the markers.
+        lines.append(_MARKER.sub(r"(تکه \1)", chunk.text))
     return "\n".join(lines)
 
 
@@ -404,15 +445,26 @@ def summarise_part(section_title: str | None, part: Part, mode: str) -> dict:
 
 def write_overview(sections: list[dict]) -> str:
     """Ask the model for a few sentences about the whole source."""
-    lines = []
-    for section in sections:
-        lines.append(f"- {section['title']}")
-        for point in section["key_points"][:3]:
-            lines.append(f"    • {point['text']}")
-    prompt = "\n".join(lines)[: max_part_chars() + 1500]
+    # Every section is named, so the overview is about the whole source;
+    # the room that is left is shared out among their first key points.
+    budget = max_part_chars() + 1500
+    titles = [f"- {section['title']}" for section in sections]
+    room = budget - sum(len(title) + 1 for title in titles)
+    per_section = max(0, room // max(1, len(sections)))
 
-    raw = llm.chat_json(_OVERVIEW_SYSTEM, prompt)
-    return _text(raw.get("overview"))[:2000]
+    lines = []
+    for title, section in zip(titles, sections):
+        lines.append(title)
+        used = 0
+        for point in section["key_points"][:3]:
+            line = f"    • {point['text']}"
+            if used + len(line) > per_section:
+                break
+            lines.append(line)
+            used += len(line) + 1
+
+    raw = llm.chat_json(_OVERVIEW_SYSTEM, "\n".join(lines)[: budget * 2])
+    return _text(raw.get("overview"), MAX_OVERVIEW_CHARS)
 
 
 # ------------------------------------------------------------ the run
@@ -426,6 +478,7 @@ class SummaryResult:
 
 INCOMPLETE = "INCOMPLETE"
 NOTHING_TO_SUMMARISE = "NOTHING_TO_SUMMARISE"
+SOURCE_TOO_LARGE = "SOURCE_TOO_LARGE"
 CANCELLED = "CANCELLED"
 
 ATTEMPTS_PER_PART = 2
@@ -447,7 +500,12 @@ def build_summary(
 
     plan = plan_sections(chunks)
     total = sum(len(section.parts) for section in plan)
+    if total > MAX_PARTS:
+        return SummaryResult({}, "FAILED", SOURCE_TOO_LARGE)
+
     done = 0
+    failed_in_a_row = 0
+    gave_up = False
     last_error: str | None = None
 
     sections: list[dict] = []
@@ -463,25 +521,35 @@ def build_summary(
 
         for part in section.parts:
             answer = None
-            for _ in range(ATTEMPTS_PER_PART):
-                try:
-                    answer = summarise_part(section.title, part, mode)
-                    break
-                except llm.LLMError as error:
-                    last_error = error.code
-                    if error.code in (llm.AI_UNAVAILABLE, llm.AI_MODEL_MISSING):
-                        # Asking again cannot help; and if the very first
-                        # part fails this way, nothing else will work.
-                        if not sections and succeeded == 0 and done == 0:
-                            return SummaryResult({}, "FAILED", error.code)
+
+            if not gave_up:
+                for _ in range(ATTEMPTS_PER_PART):
+                    try:
+                        answer = summarise_part(section.title, part, mode)
                         break
+                    except llm.LLMError as error:
+                        last_error = error.code
+                        if error.code in (llm.AI_UNAVAILABLE, llm.AI_MODEL_MISSING):
+                            # Asking again at once cannot help.
+                            break
 
             if answer is not None:
                 succeeded += 1
+                failed_in_a_row = 0
                 if merged["title"] is None:
                     merged["title"] = answer["title"] or None
                 for key in ("key_points", "tables", "warnings", "ai_notes"):
                     merged[key].extend(answer[key])
+            elif not gave_up:
+                failed_in_a_row += 1
+                if failed_in_a_row >= MAX_FAILED_PARTS_IN_A_ROW or (
+                    done == 0
+                    and last_error in (llm.AI_UNAVAILABLE, llm.AI_MODEL_MISSING)
+                ):
+                    # The model has stopped working: the remaining parts
+                    # are reported as not summarised instead of each
+                    # being waited for.
+                    gave_up = True
 
             done += 1
             if on_progress is not None and on_progress(done, total) is False:
@@ -507,7 +575,7 @@ def build_summary(
         return SummaryResult({}, "FAILED", last_error or llm.AI_FAILED)
 
     overview = ""
-    for _ in range(ATTEMPTS_PER_PART):
+    for _ in range(0 if gave_up else ATTEMPTS_PER_PART):
         try:
             overview = write_overview(sections)
             if overview:

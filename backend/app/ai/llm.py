@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import time
 
 import requests
 
@@ -43,7 +44,17 @@ def model_name() -> str:
 
 def _timeout() -> float:
     # Open models on an ordinary processor can take minutes per answer.
-    return float(os.getenv("AI_TIMEOUT_SECONDS") or 900)
+    return float(os.getenv("AI_TIMEOUT_SECONDS") or 600)
+
+
+def _max_output_tokens() -> int:
+    # Bounds how long one answer can get, so that a model that starts
+    # repeating itself cannot run on.
+    return int(os.getenv("AI_MAX_OUTPUT_TOKENS") or 2000)
+
+
+# An answer larger than this is not a summary of a few thousand characters.
+MAX_ANSWER_CHARS = 60_000
 
 
 def _headers() -> dict[str, str]:
@@ -54,15 +65,30 @@ def _headers() -> dict[str, str]:
     return headers
 
 
+_reachable_cache: dict[str, float | bool] = {"at": 0.0, "value": False}
+REACHABLE_CACHE_SECONDS = 15
+
+
 def is_reachable() -> bool:
-    """Whether an AI service answers at AI_BASE_URL (a quick check)."""
+    """Whether the AI service answers properly at AI_BASE_URL.
+
+    The answer is remembered for a few seconds, so that asking often does
+    not mean calling the service often.
+    """
+    now = time.monotonic()
+    if now - float(_reachable_cache["at"]) < REACHABLE_CACHE_SECONDS:
+        return bool(_reachable_cache["value"])
+
     try:
         response = requests.get(
             f"{base_url()}/models", headers=_headers(), timeout=3
         )
-        return response.status_code < 500
+        value = response.status_code == 200
     except requests.RequestException:
-        return False
+        value = False
+
+    _reachable_cache.update(at=now, value=value)
+    return value
 
 
 _FENCE = re.compile(r"^\s*```[a-zA-Z]*\s*|\s*```\s*$")
@@ -74,7 +100,10 @@ def parse_json_answer(text: str) -> dict:
     Models sometimes wrap the object in a code fence or add a sentence
     around it; the object itself is what counts.
     """
-    text = _FENCE.sub("", text or "").strip()
+    if not isinstance(text, str) or len(text) > MAX_ANSWER_CHARS:
+        raise LLMError(AI_BAD_ANSWER)
+
+    text = _FENCE.sub("", text).strip()
 
     start = text.find("{")
     end = text.rfind("}")
@@ -83,7 +112,7 @@ def parse_json_answer(text: str) -> dict:
 
     try:
         data = json.loads(text[start:end + 1])
-    except ValueError:
+    except (ValueError, RecursionError):
         raise LLMError(AI_BAD_ANSWER)
 
     if not isinstance(data, dict):
@@ -119,6 +148,7 @@ def chat_json(system: str, user: str) -> dict:
             {"role": "user", "content": user},
         ],
         "temperature": 0,
+        "max_tokens": _max_output_tokens(),
         # Asks the service to return nothing but a JSON object.
         "response_format": {"type": "json_object"},
     }
@@ -142,7 +172,14 @@ def chat_json(system: str, user: str) -> dict:
 
     try:
         content = response.json()["choices"][0]["message"]["content"]
-    except (ValueError, KeyError, IndexError, TypeError):
+    except (ValueError, KeyError, IndexError, TypeError, RecursionError):
         raise LLMError(AI_BAD_ANSWER)
+
+    if isinstance(content, list):
+        # Some services give the answer as a list of text pieces.
+        content = "".join(
+            piece.get("text", "") for piece in content
+            if isinstance(piece, dict) and isinstance(piece.get("text"), str)
+        )
 
     return parse_json_answer(content)

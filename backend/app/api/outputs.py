@@ -1,8 +1,9 @@
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Path
-from sqlalchemy import delete, insert, select, update
-from sqlalchemy.orm import Session
+from sqlalchemy import delete, insert, select, text, update
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session, defer
 
 from app.ai import llm
 from app.ai.summary import ChunkIn, build_summary
@@ -32,6 +33,8 @@ router = APIRouter(
 logger = logging.getLogger(__name__)
 
 GOAL_TITLES = {"SUMMARY": "خلاصه"}
+OUTPUT_LOCK_SPACE = 2
+MAX_OUTPUTS_LISTED = 100
 
 
 def _source_ids(db: Session, output_id: int) -> list[int]:
@@ -141,6 +144,12 @@ def _make_summary(output_id: int) -> None:
             )
             session.commit()
             return result.rowcount == 1
+        except Exception:
+            # A passing database problem must not throw the work away;
+            # the progress is simply written again after the next part.
+            session.rollback()
+            logger.exception("Could not write the progress of output %s", output_id)
+            return True
         finally:
             session.close()
 
@@ -200,6 +209,13 @@ def create_output(
             detail="Only a source that is READY can be summarised"
         )
 
+    # Requests of the same user wait for each other here, so that several
+    # sent at the same moment cannot all slip under the limit.
+    db.execute(
+        text("SELECT pg_advisory_xact_lock(:space, :user)"),
+        {"space": OUTPUT_LOCK_SPACE, "user": user.id},
+    )
+
     in_processing = db.query(OutputDB).filter(
         OutputDB.user_id == user.id,
         OutputDB.status == "PROCESSING"
@@ -227,13 +243,21 @@ def create_output(
         progress_done=0,
         progress_total=0,
     )
-    db.add(output)
-    db.flush()
+    try:
+        db.add(output)
+        db.flush()
 
-    db.execute(
-        insert(output_sources).values(output_id=output.id, source_id=source.id)
-    )
-    db.commit()
+        db.execute(
+            insert(output_sources).values(output_id=output.id, source_id=source.id)
+        )
+        db.commit()
+    except IntegrityError:
+        # The source or the project was deleted in the same moment.
+        db.rollback()
+        raise HTTPException(
+            status_code=404,
+            detail="Source not found"
+        )
     db.refresh(output)
 
     answer = _as_response(db, output, with_content=False)
@@ -241,7 +265,9 @@ def create_output(
 
     try:
         worker.ai.submit(make_summary, output_id)
-    except worker.WorkerBusy:
+    except Exception:
+        # The line is full, or the job could not be started at all: either
+        # way the output must not be left waiting.
         _finish(output_id, {"status": "FAILED", "status_detail": "SERVER_BUSY"})
         answer.status, answer.status_detail = "FAILED", "SERVER_BUSY"
 
@@ -257,12 +283,26 @@ def list_outputs(
     user: UserDB = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    outputs = db.query(OutputDB).filter(
+    # The (possibly large) content is not read for a list.
+    outputs = db.query(OutputDB).options(defer(OutputDB.content)).filter(
         OutputDB.project_id == project.id,
         OutputDB.user_id == user.id
-    ).order_by(OutputDB.id.desc()).all()
+    ).order_by(OutputDB.id.desc()).limit(MAX_OUTPUTS_LISTED).all()
 
-    return [_as_response(db, output, with_content=False) for output in outputs]
+    sources: dict[int, list[int]] = {}
+    for output_id, source_id in db.execute(
+        select(output_sources.c.output_id, output_sources.c.source_id)
+        .where(output_sources.c.output_id.in_([o.id for o in outputs]))
+        .order_by(output_sources.c.source_id)
+    ):
+        sources.setdefault(output_id, []).append(source_id)
+
+    result = []
+    for output in outputs:
+        item = OutputSummary.model_validate(output)
+        item.source_ids = sources.get(output.id, [])
+        result.append(item)
+    return result
 
 
 @router.get("/outputs/{output_id}", response_model=OutputResponse)
